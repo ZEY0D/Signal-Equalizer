@@ -1,1 +1,2 @@
-Frontend\app\node_modules
+# .gitignore
+Frontend/app/node_modules/

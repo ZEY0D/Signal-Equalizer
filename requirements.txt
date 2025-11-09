@@ -1,0 +1,18 @@
+# Signal Equalizer - Python Dependencies
+# Student 1 (DSP Engine) Requirements
+
+# Core dependencies
+numpy>=1.21.0
+soundfile>=0.11.0
+flask>=2.3.0
+flask-cors>=4.0.0
+
+# Testing dependencies
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Validation (optional, for FFT accuracy testing)
+scipy>=1.9.0
+
+# Development dependencies
+matplotlib>=3.5.0  # For visualization/debugging

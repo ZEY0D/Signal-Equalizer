@@ -1,7 +1,7 @@
 // src/components/SliderController.jsx
 import React, { useState } from "react";
 
-const SliderController = ({ slider, onUpdate, onRemove }) => {
+const SliderController = ({ slider, onUpdate, onRemove, onPreview }) => {
   const [isExpanded, setIsExpanded] = useState(true);
 
   const handleGainChange = (value) => {
@@ -36,6 +36,15 @@ const SliderController = ({ slider, onUpdate, onRemove }) => {
     if (gain === 1) return "⚖️";
     if (gain > 1) return "🔊";
     return "🔉";
+  };
+
+  const handleGainIconClick = () => {
+    if (onPreview) {
+      console.log("🔊 Gain preview requested for:", slider.gain);
+      onPreview(slider.gain);
+    } else {
+      console.log("❌ onPreview function not available");
+    }
   };
 
   const { startFreq, endFreq } = calculateFrequencyRange();
@@ -85,9 +94,26 @@ const SliderController = ({ slider, onUpdate, onRemove }) => {
           {/* Gain Control */}
           <div>
             <div className="flex justify-between items-center mb-2">
-              <label className="block text-sm font-medium text-gray-700">
-                🔊 Gain Strength
-              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleGainIconClick}
+                  className={`text-lg transition-all duration-200 ${
+                    onPreview
+                      ? "hover:scale-110 cursor-pointer text-blue-600"
+                      : "cursor-not-allowed text-gray-400"
+                  }`}
+                  title={
+                    onPreview
+                      ? "Test gain on selected region"
+                      : "No region selected"
+                  }
+                >
+                  🔊
+                </button>
+                <span className="block text-sm font-medium text-gray-700">
+                  Gain Strength
+                </span>
+              </div>
               <span className="text-sm font-mono bg-blue-100 text-blue-800 px-2 py-1 rounded">
                 {slider.gain.toFixed(1)}x
               </span>
@@ -106,6 +132,13 @@ const SliderController = ({ slider, onUpdate, onRemove }) => {
               <span>Normal (1)</span>
               <span>Double (2)</span>
             </div>
+
+            {/* Preview Hint */}
+            {!onPreview && (
+              <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
+                💡 Select a region on the waveform first to test gain effects
+              </div>
+            )}
           </div>
 
           {/* Center Frequency Control */}
@@ -156,7 +189,7 @@ const SliderController = ({ slider, onUpdate, onRemove }) => {
             <input
               type="range"
               min="50"
-              max="5000"
+              max="20000"
               step="50"
               value={slider.width}
               onChange={(e) => handleWidthChange(e.target.value)}
@@ -167,15 +200,6 @@ const SliderController = ({ slider, onUpdate, onRemove }) => {
               <span>Medium</span>
               <span>Wide</span>
             </div>
-            <input
-              type="number"
-              min="50"
-              max="5000"
-              step="50"
-              value={slider.width}
-              onChange={(e) => handleWidthChange(e.target.value)}
-              className="w-full mt-2 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            />
           </div>
 
           {/* Band Information */}
@@ -209,5 +233,4 @@ const SliderController = ({ slider, onUpdate, onRemove }) => {
     </div>
   );
 };
-
 export default SliderController;

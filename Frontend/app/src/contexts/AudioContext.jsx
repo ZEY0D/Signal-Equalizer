@@ -7,52 +7,39 @@ import React, {
   useEffect,
 } from "react";
 import { createSyntheticAudioBuffer } from "../utils/syntheticSignal";
+import _ from "lodash";
 
-// Create the AudioContext for React
 const AudioContext = createContext();
 
-// Custom hook to access the AudioContext
 export const useAudio = () => {
   const context = useContext(AudioContext);
-  if (!context) {
+  if (!context)
     throw new Error("useAudio must be used within an AudioProvider");
-  }
   return context;
 };
 
-// AudioProvider component that wraps the app
 export const AudioProvider = ({ children }) => {
-  // --- Audio buffers ---
-  const [inputSignal, setInputSignal] = useState(null); // Original audio buffer
-  const [outputSignal, setOutputSignal] = useState(null); // Processed audio buffer
+  const [inputSignal, setInputSignal] = useState(null);
+  const [outputSignal, setOutputSignal] = useState(null);
+  const [frequencyData, setFrequencyData] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [sliders, setSliders] = useState([]);
+  const [currentMode, setCurrentMode] = useState("generic");
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  // --- Visualization ---
-  const [frequencyData, setFrequencyData] = useState(null); // FFT data for visualizers
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const sourceRef = useRef(null);
+  const startTimeRef = useRef(0);
+  const animationFrameRef = useRef(null);
 
-  // --- Playback state ---
-  const [isPlaying, setIsPlaying] = useState(false); // Whether audio is currently playing
-  const [currentTime, setCurrentTime] = useState(0); // Current playback time
-
-  // --- State management for sliders and modes ---
-  const [sliders, setSliders] = useState([]); // Array of EQ sliders
-  const [currentMode, setCurrentMode] = useState("generic"); // Current EQ mode
-  const [isProcessing, setIsProcessing] = useState(false); // Flag for processing state
-
-  // --- Refs ---
-  const audioContextRef = useRef(null); // Web Audio API AudioContext
-  const analyserRef = useRef(null); // AnalyserNode for FFT visualization
-  const sourceRef = useRef(null); // AudioBufferSourceNode for playback
-  const startTimeRef = useRef(0); // Reference to playback start time
-  const animationFrameRef = useRef(null); // For requestAnimationFrame updates
-
-  // --- Initialize AudioContext and load default synthetic signal ---
   useEffect(() => {
     initializeAudio();
     loadSyntheticSignal();
-    addDefaultSliders(); // Load default sliders on start
+    addDefaultSliders();
   }, []);
 
-  // --- Add default EQ sliders ---
   const addDefaultSliders = () => {
     const defaultSliders = [
       { id: 1, centerFreq: 100, width: 150, gain: 1.0, label: "Bass" },
@@ -62,7 +49,6 @@ export const AudioProvider = ({ children }) => {
     setSliders(defaultSliders);
   };
 
-  // --- Initialize the AudioContext and analyser ---
   const initializeAudio = () => {
     const audioContext = new (window.AudioContext ||
       window.webkitAudioContext)();
@@ -72,7 +58,6 @@ export const AudioProvider = ({ children }) => {
     analyser.fftSize = 2048;
     analyserRef.current = analyser;
 
-    // Function to continuously update frequency data
     const updateFrequencyData = () => {
       if (analyserRef.current) {
         const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
@@ -81,26 +66,23 @@ export const AudioProvider = ({ children }) => {
       }
       animationFrameRef.current = requestAnimationFrame(updateFrequencyData);
     };
+
     updateFrequencyData();
   };
 
-  // --- Load a synthetic audio signal ---
   const loadSyntheticSignal = async () => {
     if (!audioContextRef.current) return;
     try {
-      console.log("🎵 Loading synthetic test signal...");
       const audioBuffer = await createSyntheticAudioBuffer(
         audioContextRef.current
       );
       setInputSignal(audioBuffer);
       setOutputSignal(audioBuffer);
-      console.log("✅ Synthetic signal loaded successfully");
     } catch (error) {
-      console.error("❌ Error loading synthetic signal:", error);
+      console.error("Error loading synthetic signal:", error);
     }
   };
 
-  // --- Load audio file from user input ---
   const loadAudioFile = async (file) => {
     if (!audioContextRef.current) return;
     try {
@@ -111,30 +93,10 @@ export const AudioProvider = ({ children }) => {
       setInputSignal(audioBuffer);
       setOutputSignal(audioBuffer);
     } catch (error) {
-      console.error("❌ Error loading audio file:", error);
+      console.error("Error loading audio file:", error);
     }
   };
 
-  // --- Generate gain array for each frequency bin based on sliders ---
-  const generateGainArray = (sliders, frequencyBins) => {
-    const gains = new Array(frequencyBins.length).fill(1.0); // Default gains = 1.0
-
-    sliders.forEach((slider) => {
-      const startFreq = slider.centerFreq - slider.width / 2;
-      const endFreq = slider.centerFreq + slider.width / 2;
-
-      for (let i = 0; i < frequencyBins.length; i++) {
-        const freq = frequencyBins[i];
-        if (freq >= startFreq && freq <= endFreq) {
-          gains[i] = slider.gain; // Apply slider gain
-        }
-      }
-    });
-
-    return gains;
-  };
-
-  // --- Calculate frequency bins for the analyser ---
   const getFrequencyBins = () => {
     if (!analyserRef.current) return [];
     const binCount = analyserRef.current.frequencyBinCount;
@@ -146,45 +108,63 @@ export const AudioProvider = ({ children }) => {
     return frequencies;
   };
 
-  // --- Apply equalizer to the audio signal ---
+  const generateGainArray = (sliders, frequencyBins) => {
+    const gains = new Array(frequencyBins.length).fill(1.0);
+
+    sliders.forEach((slider) => {
+      const { centerFreq, width, gain } = slider;
+      const halfWidth = width / 2;
+
+      for (let i = 0; i < frequencyBins.length; i++) {
+        const freq = frequencyBins[i];
+        const distance = Math.abs(freq - centerFreq);
+
+        if (distance <= halfWidth) {
+          const norm = distance / halfWidth;
+          const smooth = Math.cos((norm * Math.PI) / 2);
+          const smoothGain = 1 + (gain - 1) * smooth;
+          gains[i] *= smoothGain; // تراكم الباندات
+        }
+      }
+    });
+
+    return gains;
+  };
+
   const applyEqualizer = async (bands) => {
     if (!inputSignal || !audioContextRef.current) return;
 
-    try {
-      setIsProcessing(true);
-      setSliders(bands);
+    setIsProcessing(true);
+    setSliders(bands);
 
+    try {
       const frequencyBins = getFrequencyBins();
       const gainArray = generateGainArray(bands, frequencyBins);
-
       const processedBuffer = await processWithBackend(
         inputSignal,
         bands,
         gainArray
       );
-      setOutputSignal(processedBuffer);
 
+      setOutputSignal(processedBuffer);
       sendToSignalViewer(processedBuffer, bands);
       logEqualizerEffects(bands, inputSignal.metadata);
     } catch (error) {
-      console.error("❌ Error applying equalizer:", error);
+      console.error("Error applying equalizer:", error);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // --- Send data to backend for real processing ---
   const processWithBackend = async (audioBuffer, bands, gainArray) => {
     try {
-      const audioData = audioBuffer.getChannelData(0);
       const requestData = {
-        audioData: Array.from(audioData),
+        audioData: Array.from(audioBuffer.getChannelData(0)),
         gainArray,
         sampleRate: audioBuffer.sampleRate,
         bands,
         mode: currentMode,
       };
-
       const response = await fetch("http://localhost:8000/api/process-audio", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -194,38 +174,38 @@ export const AudioProvider = ({ children }) => {
       if (!response.ok) throw new Error(`Backend error: ${response.status}`);
 
       const result = await response.json();
-
-      // Convert processed array back to AudioBuffer
       const processedBuffer = audioContextRef.current.createBuffer(
         1,
         result.processedAudio.length,
         audioBuffer.sampleRate
       );
       processedBuffer.getChannelData(0).set(result.processedAudio);
-
       return processedBuffer;
     } catch (error) {
-      // Fallback if backend fails
       return applySimpleProcessing(audioBuffer, gainArray);
     }
   };
 
-  // --- Simple frontend fallback processing ---
   const applySimpleProcessing = (audioBuffer, gainArray) => {
     const clonedBuffer = audioContextRef.current.createBuffer(
       audioBuffer.numberOfChannels,
       audioBuffer.length,
       audioBuffer.sampleRate
     );
-    for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
-      clonedBuffer
-        .getChannelData(channel)
-        .set(audioBuffer.getChannelData(channel));
+
+    for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+      const inputData = audioBuffer.getChannelData(ch);
+      const outputData = clonedBuffer.getChannelData(ch);
+
+      for (let i = 0; i < audioBuffer.length; i++) {
+        // تطبق gains على طول الإشارة (باندات متراكبة)
+        outputData[i] = inputData[i] * gainArray[i];
+      }
     }
+
     return clonedBuffer;
   };
 
-  // --- Dispatch event to update external signal viewer ---
   const sendToSignalViewer = (processedBuffer, bands) => {
     const event = new CustomEvent("equalizerUpdated", {
       detail: {
@@ -237,48 +217,6 @@ export const AudioProvider = ({ children }) => {
     });
     window.dispatchEvent(event);
   };
-
-  // --- Slider management ---
-  const addSlider = (sliderData = {}) => {
-    const newSlider = {
-      id: Date.now(),
-      centerFreq: sliderData.centerFreq || 1000,
-      width: sliderData.width || 500,
-      gain: sliderData.gain || 1.0,
-      label: sliderData.label || `Band ${sliders.length + 1}`,
-      ...sliderData,
-    };
-    const updatedSliders = [...sliders, newSlider];
-    setSliders(updatedSliders);
-    applyEqualizer(updatedSliders);
-    return newSlider;
-  };
-
-  const updateSlider = (sliderId, updates) => {
-    const updatedSliders = sliders.map((slider) =>
-      slider.id === sliderId ? { ...slider, ...updates } : slider
-    );
-    setSliders(updatedSliders);
-    applyEqualizer(updatedSliders);
-  };
-
-  const removeSlider = (sliderId) => {
-    const updatedSliders = sliders.filter((slider) => slider.id !== sliderId);
-    setSliders(updatedSliders);
-    applyEqualizer(updatedSliders);
-  };
-
-  // --- Mode management ---
-  const changeMode = (newMode) => {
-    setCurrentMode(newMode);
-    loadModeSettings(newMode);
-  };
-
-  const loadModeSettings = (mode) => {
-    // TODO: Load mode settings from file or server
-  };
-
-  // --- Log equalizer effects for debugging ---
   const logEqualizerEffects = (bands, metadata) => {
     if (!metadata?.frequencies) return;
 
@@ -303,7 +241,41 @@ export const AudioProvider = ({ children }) => {
     });
   };
 
-  // --- Playback controls ---
+  const addSlider = (sliderData = {}) => {
+    const newSlider = {
+      id: Date.now(),
+      centerFreq: sliderData.centerFreq || 1000,
+      width: sliderData.width || 500,
+      gain: sliderData.gain || 1.0,
+      label: sliderData.label || `Band ${sliders.length + 1}`,
+      ...sliderData,
+    };
+    const updatedSliders = [...sliders, newSlider];
+    setSliders(updatedSliders);
+    debouncedApply(updatedSliders);
+    return newSlider;
+  };
+
+  const updateSlider = (sliderId, updates) => {
+    const updatedSliders = sliders.map((slider) =>
+      slider.id === sliderId ? { ...slider, ...updates } : slider
+    );
+    setSliders(updatedSliders);
+    debouncedApply(updatedSliders);
+  };
+
+  const removeSlider = (sliderId) => {
+    const updatedSliders = sliders.filter((slider) => slider.id !== sliderId);
+    setSliders(updatedSliders);
+    debouncedApply(updatedSliders);
+  };
+
+  const changeMode = (newMode) => {
+    setCurrentMode(newMode);
+  };
+
+  const debouncedApply = useRef(_.debounce(applyEqualizer, 200)).current;
+
   const playAudio = (type = "output") => {
     const buffer = type === "input" ? inputSignal : outputSignal;
     if (!buffer || !audioContextRef.current) return;
@@ -355,30 +327,31 @@ export const AudioProvider = ({ children }) => {
     setCurrentTime(0);
   };
 
-  // --- Context value ---
-  const value = {
-    inputSignal,
-    outputSignal,
-    frequencyData,
-    isPlaying,
-    currentTime,
-    sliders,
-    currentMode,
-    isProcessing,
-    loadAudioFile,
-    loadSyntheticSignal,
-    applyEqualizer,
-    playAudio,
-    stopAudio,
-    addSlider,
-    updateSlider,
-    removeSlider,
-    changeMode,
-    generateGainArray,
-    getFrequencyBins,
-  };
-
   return (
-    <AudioContext.Provider value={value}>{children}</AudioContext.Provider>
+    <AudioContext.Provider
+      value={{
+        inputSignal,
+        outputSignal,
+        frequencyData,
+        isPlaying,
+        currentTime,
+        sliders,
+        currentMode,
+        isProcessing,
+        loadAudioFile,
+        loadSyntheticSignal,
+        applyEqualizer,
+        playAudio,
+        stopAudio,
+        addSlider,
+        updateSlider,
+        removeSlider,
+        changeMode,
+        generateGainArray,
+        getFrequencyBins,
+      }}
+    >
+      {children}
+    </AudioContext.Provider>
   );
 };
