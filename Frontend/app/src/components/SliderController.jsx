@@ -1,28 +1,154 @@
-// src/components/SliderController.jsx
-import React, { useState } from "react";
+ // src/components/SliderController.jsx
+import React, { useState , useEffect } from "react";
 
-const SliderController = ({ slider, onUpdate, onRemove, onPreview }) => {
+/**
+ * Enhanced SliderController component with real-time gain preview
+ * Applies gain changes to the currently selected audio region
+ * 
+ * @param {Object} slider - The slider configuration object
+ * @param {Function} onUpdate - Callback when slider values change
+ * @param {Function} onRemove - Callback to remove this slider
+ * @param {Function} onPreview - Callback to preview gain on current selection
+ * @param {Object} currentSelection - The currently selected audio region for preview
+ */
+const SliderController = ({ 
+  slider, 
+  onUpdate, 
+  onRemove, 
+  onPreview,
+  currentSelection 
+}) => {
   const [isExpanded, setIsExpanded] = useState(true);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  // 🔍 Debug: راقبي تغييرات currentSelection
+  useEffect(() => {
+    console.log("🔄 SliderController: currentSelection changed!", {
+      sliderId: slider.id,
+      sliderLabel: slider.label,
+      hasSelection: !!currentSelection,
+      samples: currentSelection ? 
+        `${currentSelection.startSample}-${currentSelection.endSample}` : 
+        'NO SELECTION',
+      freq: currentSelection ?
+        `${currentSelection.startFreq?.toFixed(0)}-${currentSelection.endFreq?.toFixed(0)} Hz` :
+        'NO FREQ'
+    });
+  }, [currentSelection, slider.id, slider.label]);
+  
+  // 🔍 Debug: راقبي تغييرات slider
+  useEffect(() => {
+    console.log("🎛️ SliderController: slider changed!", {
+      id: slider.id,
+      label: slider.label,
+      centerFreq: slider.centerFreq,
+      width: slider.width,
+      gain: slider.gain
+    });
+  }, [slider.centerFreq, slider.width, slider.gain]);
+  // Check if we have a valid selection for preview
+  const hasValidSelection = currentSelection && 
+                           currentSelection.startSample !== undefined && 
+                           currentSelection.endSample !== undefined;
 
-  const handleGainChange = (value) => {
-    onUpdate({ gain: parseFloat(value) });
-  };
+const handleGainChange = (value) => {
+  const newGain = parseFloat(value);
+  console.log("🎚️ Gain changed:", {
+    old: slider.gain,
+    new: newGain,
+    willPreview: hasValidSelection && newGain !== 1.0
+  });
+  onUpdate({ gain: newGain });
 
-  const handleCenterFreqChange = (value) => {
-    onUpdate({ centerFreq: parseFloat(value) });
-  };
+  // Auto-preview when gain changes
+  if (hasValidSelection && newGain !== 1.0) {
+    triggerGainPreview(newGain);
+  }
+};
 
-  const handleWidthChange = (value) => {
-    onUpdate({ width: parseFloat(value) });
-  };
+
+const handleCenterFreqChange = (value) => {
+  const newCenterFreq = parseFloat(value);
+  console.log("📍 Center Freq changing from", slider.centerFreq, "to", newCenterFreq);
+  console.log("   Current selection BEFORE update:", currentSelection ? 
+    `samples: ${currentSelection.startSample}-${currentSelection.endSample}` : 
+    'NO SELECTION');
+  
+  onUpdate({ centerFreq: newCenterFreq });
+  
+  // الـ selection المفروض يتحدث فوراً بعد onUpdate
+  setTimeout(() => {
+    console.log("   Current selection AFTER update:", currentSelection ? 
+      `samples: ${currentSelection.startSample}-${currentSelection.endSample}` : 
+      'STILL NO SELECTION');
+  }, 50);
+};
+
+const handleWidthChange = (value) => {
+  const newWidth = parseFloat(value);
+  console.log("📏 Width changing from", slider.width, "to", newWidth);
+  console.log("   Current selection BEFORE update:", currentSelection ? 
+    `samples: ${currentSelection.startSample}-${currentSelection.endSample}` : 
+    'NO SELECTION');
+  
+  onUpdate({ width: newWidth });
+  
+  setTimeout(() => {
+    console.log("   Current selection AFTER update:", currentSelection ? 
+      `samples: ${currentSelection.startSample}-${currentSelection.endSample}` : 
+      'STILL NO SELECTION');
+  }, 50);
+};
 
   const handleLabelChange = (value) => {
     onUpdate({ label: value });
   };
 
+  /**
+   * Triggers gain preview with visual feedback
+   */
+  const triggerGainPreview = async (gain = slider.gain) => {
+    if (!hasValidSelection || !onPreview) {
+      console.log("❌ Cannot preview: No valid selection or preview function");
+      return;
+    }
+
+    try {
+      setIsPreviewing(true);
+      console.log("🎵 Previewing gain:", {
+        gain,
+        selection: {
+          startSample: currentSelection.startSample,
+          endSample: currentSelection.endSample,
+          frequencyRange: `${currentSelection.startFreq.toFixed(0)}-${currentSelection.endFreq.toFixed(0)} Hz`
+        }
+      });
+      
+      await onPreview(gain, currentSelection);
+      
+      // Auto-stop preview after 2 seconds
+      setTimeout(() => {
+        setIsPreviewing(false);
+      }, 2000);
+      
+    } catch (error) {
+      console.error("🔴 Preview error:", error);
+      setIsPreviewing(false);
+    }
+  };
+
+  /**
+   * Stops any active preview
+   */
+  const stopPreview = () => {
+    if (onPreview) {
+      onPreview(1.0, currentSelection); // Reset to normal gain
+    }
+    setIsPreviewing(false);
+  };
+
   const calculateFrequencyRange = () => {
-    const startFreq = slider.centerFreq - slider.width / 2;
-    const endFreq = slider.centerFreq + slider.width / 2;
+    const startFreq = Math.max(20, slider.centerFreq - slider.width / 2);
+    const endFreq = Math.min(20000, slider.centerFreq + slider.width / 2);
     return { startFreq, endFreq };
   };
 
@@ -38,19 +164,42 @@ const SliderController = ({ slider, onUpdate, onRemove, onPreview }) => {
     return "🔉";
   };
 
-  const handleGainIconClick = () => {
-    if (onPreview) {
-      console.log("🔊 Gain preview requested for:", slider.gain);
-      onPreview(slider.gain);
-    } else {
-      console.log("❌ onPreview function not available");
+  const getPreviewButtonState = () => {
+    if (!hasValidSelection) {
+      return {
+        icon: "🔇",
+        tooltip: "Select a region on waveform first",
+        className: "cursor-not-allowed text-gray-400",
+        disabled: true
+      };
     }
+    
+    if (isPreviewing) {
+      return {
+        icon: "⏹️",
+        tooltip: "Stop preview",
+        className: "cursor-pointer text-red-600 hover:scale-110",
+        disabled: false
+      };
+    }
+    
+    return {
+      icon: "👂",
+      tooltip: `Preview gain on selected region (${currentSelection.startFreq.toFixed(0)}-${currentSelection.endFreq.toFixed(0)} Hz)`,
+      className: "cursor-pointer text-blue-600 hover:scale-110",
+      disabled: false
+    };
   };
 
   const { startFreq, endFreq } = calculateFrequencyRange();
+  const previewButton = getPreviewButtonState();
 
   return (
-    <div className="border-2 border-gray-200 rounded-xl p-4 bg-white hover:bg-gray-50 transition-all duration-200">
+    <div className={`border-2 rounded-xl p-4 transition-all duration-200 ${
+      isPreviewing 
+        ? "border-blue-400 bg-blue-50 shadow-lg" 
+        : "border-gray-200 bg-white hover:bg-gray-50"
+    }`}>
       {/* Header */}
       <div className="flex justify-between items-center mb-3">
         <div className="flex items-center space-x-3">
@@ -91,33 +240,36 @@ const SliderController = ({ slider, onUpdate, onRemove, onPreview }) => {
       {/* Expanded Controls */}
       {isExpanded && (
         <div className="space-y-4 mt-4 border-t pt-4">
-          {/* Gain Control */}
+          {/* Gain Control with Enhanced Preview */}
           <div>
             <div className="flex justify-between items-center mb-2">
               <div className="flex items-center gap-2">
                 <button
-                  onClick={handleGainIconClick}
-                  className={`text-lg transition-all duration-200 ${
-                    onPreview
-                      ? "hover:scale-110 cursor-pointer text-blue-600"
-                      : "cursor-not-allowed text-gray-400"
-                  }`}
-                  title={
-                    onPreview
-                      ? "Test gain on selected region"
-                      : "No region selected"
-                  }
+                  onClick={isPreviewing ? stopPreview : () => triggerGainPreview()}
+                  disabled={previewButton.disabled}
+                  className={`text-lg transition-all duration-200 ${previewButton.className}`}
+                  title={previewButton.tooltip}
                 >
-                  🔊
+                  {previewButton.icon}
                 </button>
                 <span className="block text-sm font-medium text-gray-700">
                   Gain Strength
+                  {isPreviewing && (
+                    <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded animate-pulse">
+                      PREVIEWING
+                    </span>
+                  )}
                 </span>
               </div>
-              <span className="text-sm font-mono bg-blue-100 text-blue-800 px-2 py-1 rounded">
+              <span className={`text-sm font-mono px-2 py-1 rounded ${
+                slider.gain === 1 ? "bg-gray-100 text-gray-800" :
+                slider.gain > 1 ? "bg-green-100 text-green-800" :
+                "bg-red-100 text-red-800"
+              }`}>
                 {slider.gain.toFixed(1)}x
               </span>
             </div>
+
             <input
               type="range"
               min="0"
@@ -133,12 +285,24 @@ const SliderController = ({ slider, onUpdate, onRemove, onPreview }) => {
               <span>Double (2)</span>
             </div>
 
-            {/* Preview Hint */}
-            {!onPreview && (
-              <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
-                💡 Select a region on the waveform first to test gain effects
-              </div>
-            )}
+            {/* Selection Info & Auto-preview */}
+            <div className="mt-3 space-y-2">
+              {hasValidSelection ? (
+                <div className="p-2 bg-green-50 border border-green-200 rounded text-xs text-green-800">
+                  <div className="font-medium">🎯 Preview Ready</div>
+                  <div>Region: {currentSelection.startFreq.toFixed(0)}-{currentSelection.endFreq.toFixed(0)} Hz</div>
+                  <div>Samples: {currentSelection.startSample}-{currentSelection.endSample}</div>
+                  <div className="text-green-600 mt-1">
+                    💡 Gain changes auto-preview on selected region
+                  </div>
+                </div>
+              ) : (
+                <div className="p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
+                  <div className="font-medium">⏳ Waiting for Selection</div>
+                  <div>Select a region on the waveform to enable gain preview</div>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Center Frequency Control */}
@@ -202,10 +366,17 @@ const SliderController = ({ slider, onUpdate, onRemove, onPreview }) => {
             </div>
           </div>
 
-          {/* Band Information */}
-          <div className="p-3 bg-gray-50 rounded-lg border">
-            <h4 className="font-medium text-gray-800 mb-2">
+          {/* Enhanced Band Information */}
+          <div className={`p-3 rounded-lg border ${
+            isPreviewing ? "bg-blue-50 border-blue-200" : "bg-gray-50 border-gray-200"
+          }`}>
+            <h4 className="font-medium text-gray-800 mb-2 flex items-center gap-2">
               📊 Band Information
+              {isPreviewing && (
+                <span className="text-xs bg-blue-500 text-white px-2 py-1 rounded-full animate-pulse">
+                  LIVE
+                </span>
+              )}
             </h4>
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
@@ -227,10 +398,23 @@ const SliderController = ({ slider, onUpdate, onRemove, onPreview }) => {
                 </span>
               </div>
             </div>
+            
+            {/* Current Selection Info */}
+            {hasValidSelection && (
+              <div className="mt-3 pt-3 border-t border-gray-200">
+                <div className="text-xs text-gray-600 mb-1">🎯 Preview Target:</div>
+                <div className="text-xs font-mono bg-blue-100 text-blue-800 p-2 rounded">
+                  Samples {currentSelection.startSample} - {currentSelection.endSample}
+                  <br />
+                  ({currentSelection.startFreq.toFixed(0)}-{currentSelection.endFreq.toFixed(0)} Hz)
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
     </div>
   );
 };
+
 export default SliderController;

@@ -5,8 +5,11 @@ import React, {
   useState,
   useRef,
   useEffect,
+
+  
 } from "react";
 import { createSyntheticAudioBuffer } from "../utils/syntheticSignal";
+import { processAudioWithBackend, checkBackendHealth } from "../utils/audioApi";
 import _ from "lodash";
 
 const AudioContext = createContext();
@@ -27,6 +30,7 @@ export const AudioProvider = ({ children }) => {
   const [sliders, setSliders] = useState([]);
   const [currentMode, setCurrentMode] = useState("generic");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [backendAvailable, setBackendAvailable] = useState(false);
 
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
@@ -37,17 +41,20 @@ export const AudioProvider = ({ children }) => {
   useEffect(() => {
     initializeAudio();
     loadSyntheticSignal();
-    addDefaultSliders();
+    checkBackend();
   }, []);
 
-  const addDefaultSliders = () => {
-    const defaultSliders = [
-      { id: 1, centerFreq: 100, width: 150, gain: 1.0, label: "Bass" },
-      { id: 2, centerFreq: 1000, width: 800, gain: 1.0, label: "Mid" },
-      { id: 3, centerFreq: 5000, width: 3000, gain: 1.0, label: "Treble" },
-    ];
-    setSliders(defaultSliders);
+  const checkBackend = async () => {
+    const isAvailable = await checkBackendHealth();
+    setBackendAvailable(isAvailable);
+    if (isAvailable) {
+      console.log("✅ Backend connected successfully");
+    } else {
+      console.warn("⚠️ Backend unavailable - using fallback processing");
+    }
   };
+
+
 
   const initializeAudio = () => {
     const audioContext = new (window.AudioContext ||
@@ -123,7 +130,7 @@ export const AudioProvider = ({ children }) => {
           const norm = distance / halfWidth;
           const smooth = Math.cos((norm * Math.PI) / 2);
           const smoothGain = 1 + (gain - 1) * smooth;
-          gains[i] *= smoothGain; // تراكم الباندات
+          gains[i] *= smoothGain;
         }
       }
     });
@@ -135,20 +142,37 @@ export const AudioProvider = ({ children }) => {
     if (!inputSignal || !audioContextRef.current) return;
 
     setIsProcessing(true);
-    setSliders(bands);
 
     try {
       const frequencyBins = getFrequencyBins();
       const gainArray = generateGainArray(bands, frequencyBins);
-      const processedBuffer = await processWithBackend(
-        inputSignal,
-        bands,
-        gainArray
-      );
+      
+      // محاولة استخدام Backend أولاً
+      let processedBuffer;
+      
+      if (backendAvailable) {
+        try {
+          console.log("🔄 Processing with backend...");
+          processedBuffer = await processWithBackend(
+            inputSignal,
+            bands,
+            gainArray
+          );
+          console.log("✅ Backend processing successful");
+        } catch (backendError) {
+          console.warn("⚠️ Backend failed, using fallback:", backendError);
+          processedBuffer = applySimpleProcessing(inputSignal, gainArray);
+        }
+      } else {
+        // استخدام الـ fallback مباشرةً
+        console.log("⚡ Using client-side processing");
+        processedBuffer = applySimpleProcessing(inputSignal, gainArray);
+      }
 
       setOutputSignal(processedBuffer);
       sendToSignalViewer(processedBuffer, bands);
       logEqualizerEffects(bands, inputSignal.metadata);
+      
     } catch (error) {
       console.error("Error applying equalizer:", error);
     } finally {
@@ -158,48 +182,52 @@ export const AudioProvider = ({ children }) => {
 
   const processWithBackend = async (audioBuffer, bands, gainArray) => {
     try {
-      const requestData = {
-        audioData: Array.from(audioBuffer.getChannelData(0)),
-        gainArray,
-        sampleRate: audioBuffer.sampleRate,
+      // استخدام الـ API utility
+      const result = await processAudioWithBackend(
+        audioBuffer,
         bands,
-        mode: currentMode,
-      };
-      const response = await fetch("http://localhost:8000/api/process-audio", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestData),
-      });
+        gainArray,
+        currentMode
+      );
 
-      if (!response.ok) throw new Error(`Backend error: ${response.status}`);
-
-      const result = await response.json();
+      // تحويل النتيجة لـ AudioBuffer
       const processedBuffer = audioContextRef.current.createBuffer(
         1,
         result.processedAudio.length,
         audioBuffer.sampleRate
       );
       processedBuffer.getChannelData(0).set(result.processedAudio);
+      
+      // حفظ metadata للتحليل
+      processedBuffer.metadata = result.metadata;
+      
       return processedBuffer;
+      
     } catch (error) {
-      return applySimpleProcessing(audioBuffer, gainArray);
+      console.error("Backend processing error:", error);
+      throw error; // نرمي الخطأ للـ fallback
     }
   };
 
   const applySimpleProcessing = (audioBuffer, gainArray) => {
+    console.log("🔧 Applying client-side processing...");
+    
     const clonedBuffer = audioContextRef.current.createBuffer(
       audioBuffer.numberOfChannels,
       audioBuffer.length,
       audioBuffer.sampleRate
     );
 
+    // معالجة بسيطة في الـ time domain
     for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
       const inputData = audioBuffer.getChannelData(ch);
       const outputData = clonedBuffer.getChannelData(ch);
 
+      // تطبيق Gain مباشر (تقريبي)
+      const avgGain = gainArray.reduce((a, b) => a + b, 0) / gainArray.length;
+      
       for (let i = 0; i < audioBuffer.length; i++) {
-        // تطبق gains على طول الإشارة (باندات متراكبة)
-        outputData[i] = inputData[i] * gainArray[i];
+        outputData[i] = inputData[i] * avgGain;
       }
     }
 
@@ -217,6 +245,7 @@ export const AudioProvider = ({ children }) => {
     });
     window.dispatchEvent(event);
   };
+
   const logEqualizerEffects = (bands, metadata) => {
     if (!metadata?.frequencies) return;
 
@@ -338,6 +367,7 @@ export const AudioProvider = ({ children }) => {
         sliders,
         currentMode,
         isProcessing,
+        backendAvailable,
         loadAudioFile,
         loadSyntheticSignal,
         applyEqualizer,
@@ -349,6 +379,7 @@ export const AudioProvider = ({ children }) => {
         changeMode,
         generateGainArray,
         getFrequencyBins,
+        checkBackend,
       }}
     >
       {children}
