@@ -420,10 +420,13 @@ class SignalProcessor:
 
 def create_synthetic_test_signal(frequencies_hz, duration=2.0, sample_rate=44100):
     """
-    Create a synthetic test signal with multiple pure tones.
+    Create a synthetic test signal with time-segmented pure tones.
     
-    This is useful for validation - you can verify that each slider
-    only affects its intended frequency.
+    For durations >= 10 seconds: Creates segments where each frequency plays separately
+    for equal time periods. This allows clear validation that each slider affects 
+    only its intended frequency without interference.
+    
+    For durations < 10 seconds: Combines all frequencies (legacy behavior).
     
     Args:
         frequencies_hz (list): List of frequencies in Hz
@@ -434,25 +437,52 @@ def create_synthetic_test_signal(frequencies_hz, duration=2.0, sample_rate=44100
         tuple: (signal, sample_rate)
     
     Example:
-        >>> # Create test signal with 4 pure tones
-        >>> signal, sr = create_synthetic_test_signal([100, 500, 1000, 2000])
-        >>> processor = SignalProcessor()
-        >>> processor.set_signal(signal, sr)
+        >>> # Create 20-second test signal with time segments
+        >>> signal, sr = create_synthetic_test_signal([100, 500, 1000, 2000, 4000], duration=20.0)
+        >>> # Time layout: 0-4s: 100Hz, 4-8s: 500Hz, 8-12s: 1000Hz, 12-16s: 2000Hz, 16-20s: 4000Hz
     """
-    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
-    signal = np.zeros_like(t)
+    total_samples = int(sample_rate * duration)
+    t = np.linspace(0, duration, total_samples, endpoint=False)
+    signal = np.zeros(total_samples)
     
-    # Add each frequency component
-    for freq in frequencies_hz:
-        signal += np.sin(2 * np.pi * freq * t)
+    # Time-segmented mode for longer signals (better for testing)
+    if duration >= 10.0 and len(frequencies_hz) > 0:
+        segment_duration = duration / len(frequencies_hz)
+        segment_samples = int(sample_rate * segment_duration)
+        
+        print(f"✓ Creating time-segmented synthetic signal:")
+        print(f"  - Total Duration: {duration} s")
+        print(f"  - Frequencies: {frequencies_hz} Hz")
+        print(f"  - Segment Duration: {segment_duration:.1f} s each")
+        print(f"  - Time Layout:")
+        
+        for i, freq in enumerate(frequencies_hz):
+            start_sample = i * segment_samples
+            end_sample = min((i + 1) * segment_samples, total_samples)
+            segment_length = end_sample - start_sample
+            
+            # Generate pure tone for this segment
+            t_segment = np.linspace(0, segment_length / sample_rate, segment_length, endpoint=False)
+            signal[start_sample:end_sample] = np.sin(2 * np.pi * freq * t_segment)
+            
+            start_time = i * segment_duration
+            end_time = start_time + segment_length / sample_rate
+            print(f"    {start_time:.1f}s - {end_time:.1f}s: {freq} Hz")
+    
+    else:
+        # Combined mode for short signals (legacy behavior)
+        print(f"✓ Creating combined synthetic signal:")
+        print(f"  - Frequencies: {frequencies_hz} Hz (all combined)")
+        print(f"  - Duration: {duration} s")
+        
+        for freq in frequencies_hz:
+            signal += np.sin(2 * np.pi * freq * t)
     
     # Normalize
     signal = normalize_signal(signal)
     
-    print(f"✓ Created synthetic signal:")
-    print(f"  - Frequencies: {frequencies_hz} Hz")
-    print(f"  - Duration: {duration} s")
     print(f"  - Sample Rate: {sample_rate} Hz")
+    print(f"  - Total Samples: {len(signal)}")
     
     return signal, sample_rate
 

@@ -96,14 +96,14 @@ export async function computeFFT(sessionId, positiveOnly = true) {
 }
 
 /**
- * Get input signal data for visualization
+ * Compute FFT for the OUTPUT (processed) signal
  * @param {string} sessionId - Session identifier
- * @param {number} maxPoints - Maximum points to return (for downsampling)
- * @returns {Promise<{signal, time_axis, sample_rate, length, start, end}>}
+ * @param {boolean} positiveOnly - Return only positive frequencies
+ * @returns {Promise<{frequencies, magnitudes, phases, length}>}
  */
-export async function getInputSignal(sessionId, maxPoints = 10000) {
+export async function getOutputFFT(sessionId, positiveOnly = true) {
   return apiRequest(
-    `/api/signal/input?session_id=${sessionId}&max_points=${maxPoints}`,
+    `/api/fft/output?session_id=${sessionId}&positive_only=${positiveOnly}`,
     {
       method: 'GET',
     }
@@ -111,14 +111,63 @@ export async function getInputSignal(sessionId, maxPoints = 10000) {
 }
 
 /**
- * Get output (processed) signal data for visualization
+ * Get input signal data
  * @param {string} sessionId - Session identifier
  * @param {number} maxPoints - Maximum points to return (for downsampling)
+ * @param {boolean} full - If true, return full signal without downsampling (for audio)
  * @returns {Promise<{signal, time_axis, sample_rate, length, start, end}>}
  */
-export async function getOutputSignal(sessionId, maxPoints = 10000) {
+export async function getInputSignal(sessionId, maxPoints = 10000, full = false) {
   return apiRequest(
-    `/api/signal/output?session_id=${sessionId}&max_points=${maxPoints}`,
+    `/api/signal/input?session_id=${sessionId}&max_points=${maxPoints}&full=${full}`,
+    {
+      method: 'GET',
+    }
+  );
+}
+
+/**
+ * Get output (processed) signal data
+ * @param {string} sessionId - Session identifier
+ * @param {number} maxPoints - Maximum points to return (for downsampling)
+ * @param {boolean} full - If true, return full signal without downsampling (for audio)
+ * @returns {Promise<{signal, time_axis, sample_rate, length, start, end}>}
+ */
+export async function getOutputSignal(sessionId, maxPoints = 10000, full = false) {
+  return apiRequest(
+    `/api/signal/output?session_id=${sessionId}&max_points=${maxPoints}&full=${full}`,
+    {
+      method: 'GET',
+    }
+  );
+}
+
+/**
+ * Get input signal spectrogram
+ * @param {string} sessionId - Session identifier
+ * @param {number} windowSize - FFT window size
+ * @param {number} overlap - Overlap ratio (0.0 to 1.0)
+ * @returns {Promise<{times, frequencies, magnitude, sample_rate}>}
+ */
+export async function getInputSpectrogram(sessionId, windowSize = 1024, overlap = 0.75) {
+  return apiRequest(
+    `/api/spectrogram/input?session_id=${sessionId}&window_size=${windowSize}&overlap=${overlap}`,
+    {
+      method: 'GET',
+    }
+  );
+}
+
+/**
+ * Get output (processed) signal spectrogram
+ * @param {string} sessionId - Session identifier
+ * @param {number} windowSize - FFT window size
+ * @param {number} overlap - Overlap ratio (0.0 to 1.0)
+ * @returns {Promise<{times, frequencies, magnitude, sample_rate}>}
+ */
+export async function getOutputSpectrogram(sessionId, windowSize = 1024, overlap = 0.75) {
+  return apiRequest(
+    `/api/spectrogram/output?session_id=${sessionId}&window_size=${windowSize}&overlap=${overlap}`,
     {
       method: 'GET',
     }

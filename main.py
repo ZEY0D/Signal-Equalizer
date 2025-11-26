@@ -77,6 +77,13 @@ class SignalDataResponse(BaseModel):
     start: int
     end: int
 
+class SpectrogramResponse(BaseModel):
+    """Defines the data for spectrogram visualization"""
+    times: List[float]
+    frequencies: List[float]
+    magnitude: List[List[float]]  # 2D array: [time_index][freq_index]
+    sample_rate: int
+
 # --- FastAPI App Initialization ---
 app = FastAPI(
     title="Signal Equalizer API (FastAPI)",
@@ -103,9 +110,11 @@ app.add_middleware(
 sessions: Dict[str, SignalProcessor] = {}
 
 # --- File Paths ---
-UPLOAD_FOLDER = "uploads"
-OUTPUT_FOLDER = "outputs"
-CONFIG_FOLDER = "configs"
+# Use absolute paths to avoid issues with working directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+OUTPUT_FOLDER = os.path.join(BASE_DIR, "outputs")
+CONFIG_FOLDER = os.path.join(BASE_DIR, "configs")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(CONFIG_FOLDER, exist_ok=True)
@@ -226,6 +235,39 @@ async def compute_fft(session_id: str, positive_only: bool = True):
         'length': len(frequencies)
     }
 
+@app.get("/api/fft/output", response_model=FFTResponse)
+async def get_output_fft(session_id: str, positive_only: bool = True):
+    """
+    Returns the FFT of the OUTPUT (processed) signal.
+    Uses the modified frequency domain directly (more accurate than FFT->IFFT->FFT).
+    Use this to compare frequency spectrum before/after processing.
+    """
+    processor = await get_session(session_id)
+    
+    # Check if modified frequency domain exists (created after processing)
+    if processor.modified_freq_domain is None:
+        raise HTTPException(status_code=400, detail="No output signal available. Process signal first.")
+    
+    # Use the modified frequency domain directly (already computed, more accurate)
+    import numpy as np
+    
+    frequencies = processor.frequencies
+    magnitudes = np.abs(processor.modified_freq_domain)
+    phases = np.angle(processor.modified_freq_domain)
+    
+    if positive_only:
+        positive_mask = frequencies >= 0
+        frequencies = frequencies[positive_mask]
+        magnitudes = magnitudes[positive_mask]
+        phases = phases[positive_mask]
+        
+    return {
+        'frequencies': frequencies.tolist(),
+        'magnitudes': magnitudes.tolist(),
+        'phases': phases.tolist(),
+        'length': len(frequencies)
+    }
+
 @app.post("/api/process", response_model=ProcessResponse)
 async def process_signal(request: ProcessRequest):
     """
@@ -263,12 +305,31 @@ async def process_signal(request: ProcessRequest):
     }
 
 @app.get("/api/signal/input", response_model=SignalDataResponse)
-async def get_input_signal(session_id: str, max_points: int = 10000):
-    """Gets the input signal waveform for (Student 2's) viewer."""
+async def get_input_signal(session_id: str, max_points: int = 10000, full: bool = False):
+    """
+    Gets the input signal waveform.
+    
+    Args:
+        session_id: Session identifier
+        max_points: Maximum points to return (for visualization)
+        full: If True, return full signal without downsampling (for audio playback)
+    """
     processor = await get_session(session_id)
     signal = processor.original_data
     
-    # Downsample for frontend performance
+    # Full signal for audio playback
+    if full:
+        time_axis = np.arange(len(signal)) / processor.sample_rate
+        return {
+            'signal': signal.tolist(),
+            'time_axis': time_axis.tolist(),
+            'sample_rate': processor.sample_rate,
+            'length': len(signal),
+            'start': 0,
+            'end': len(signal)
+        }
+    
+    # Downsample for frontend performance (charts)
     if len(signal) > max_points:
         step = len(signal) // max_points
         signal = signal[::step]
@@ -287,15 +348,35 @@ async def get_input_signal(session_id: str, max_points: int = 10000):
     }
 
 @app.get("/api/signal/output", response_model=SignalDataResponse)
-async def get_output_signal(session_id: str, max_points: int = 10000):
-    """Gets the output (processed) signal waveform."""
+async def get_output_signal(session_id: str, max_points: int = 10000, full: bool = False):
+    """
+    Gets the output (processed) signal waveform.
+    
+    Args:
+        session_id: Session identifier
+        max_points: Maximum points to return (for visualization)
+        full: If True, return full signal without downsampling (for audio playback)
+    """
     processor = await get_session(session_id)
-    signal = processor.data # .data holds the *current* processed signal
+    # processor.data holds the current (processed) signal
+    signal = processor.data
     
     if signal is None:
         signal = processor.original_data
     
-    # Downsample
+    # Full signal for audio playback
+    if full:
+        time_axis = np.arange(len(signal)) / processor.sample_rate
+        return {
+            'signal': signal.tolist(),
+            'time_axis': time_axis.tolist(),
+            'sample_rate': processor.sample_rate,
+            'length': len(signal),
+            'start': 0,
+            'end': len(signal)
+        }
+    
+    # Downsample for charts
     if len(signal) > max_points:
         step = len(signal) // max_points
         signal = signal[::step]
@@ -308,9 +389,128 @@ async def get_output_signal(session_id: str, max_points: int = 10000):
         'signal': signal.tolist(),
         'time_axis': time_axis.tolist(),
         'sample_rate': processor.sample_rate,
-        'length': len(processor.data),
+        'length': len(processor.data if processor.data is not None else processor.original_data),
         'start': 0,
-        'end': len(processor.data)
+        'end': len(processor.data if processor.data is not None else processor.original_data)
+    }
+
+@app.get("/api/spectrogram/input", response_model=SpectrogramResponse)
+async def get_input_spectrogram(session_id: str, window_size: int = 1024, overlap: float = 0.75):
+    """
+    Computes and returns the spectrogram of the INPUT signal.
+    
+    Args:
+        session_id: Session identifier
+        window_size: Size of FFT window (samples)
+        overlap: Overlap ratio between windows (0.0 to 1.0)
+    """
+    processor = await get_session(session_id)
+    
+    if processor.original_data is None:
+        raise HTTPException(status_code=400, detail="No input signal available")
+    
+    from backend.fft_implementation import fft
+    
+    signal = processor.original_data
+    sample_rate = processor.sample_rate
+    hop_size = int(window_size * (1 - overlap))
+    
+    # Calculate number of windows
+    num_windows = (len(signal) - window_size) // hop_size + 1
+    
+    # Initialize spectrogram array
+    num_freqs = window_size // 2 + 1
+    spectrogram = []
+    times = []
+    
+    for i in range(num_windows):
+        start = i * hop_size
+        end = start + window_size
+        
+        if end > len(signal):
+            break
+            
+        window = signal[start:end]
+        
+        # Apply Hann window
+        hann = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(window_size) / window_size)
+        windowed = window * hann
+        
+        # Compute FFT
+        fft_result = fft(windowed)
+        magnitude = np.abs(fft_result[:num_freqs])
+        
+        spectrogram.append(magnitude.tolist())
+        times.append(start / sample_rate)
+    
+    # Frequency axis
+    frequencies = np.fft.rfftfreq(window_size, 1/sample_rate)
+    
+    return {
+        'times': times,
+        'frequencies': frequencies.tolist(),
+        'magnitude': spectrogram,
+        'sample_rate': sample_rate
+    }
+
+@app.get("/api/spectrogram/output", response_model=SpectrogramResponse)
+async def get_output_spectrogram(session_id: str, window_size: int = 1024, overlap: float = 0.75):
+    """
+    Computes and returns the spectrogram of the OUTPUT (processed) signal.
+    
+    Args:
+        session_id: Session identifier
+        window_size: Size of FFT window (samples)
+        overlap: Overlap ratio between windows (0.0 to 1.0)
+    """
+    processor = await get_session(session_id)
+    
+    signal = processor.data if processor.data is not None else processor.original_data
+    
+    if signal is None:
+        raise HTTPException(status_code=400, detail="No output signal available")
+    
+    from backend.fft_implementation import fft
+    
+    sample_rate = processor.sample_rate
+    hop_size = int(window_size * (1 - overlap))
+    
+    # Calculate number of windows
+    num_windows = (len(signal) - window_size) // hop_size + 1
+    
+    # Initialize spectrogram array
+    num_freqs = window_size // 2 + 1
+    spectrogram = []
+    times = []
+    
+    for i in range(num_windows):
+        start = i * hop_size
+        end = start + window_size
+        
+        if end > len(signal):
+            break
+            
+        window = signal[start:end]
+        
+        # Apply Hann window
+        hann = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(window_size) / window_size)
+        windowed = window * hann
+        
+        # Compute FFT
+        fft_result = fft(windowed)
+        magnitude = np.abs(fft_result[:num_freqs])
+        
+        spectrogram.append(magnitude.tolist())
+        times.append(start / sample_rate)
+    
+    # Frequency axis
+    frequencies = np.fft.rfftfreq(window_size, 1/sample_rate)
+    
+    return {
+        'times': times,
+        'frequencies': frequencies.tolist(),
+        'magnitude': spectrogram,
+        'sample_rate': sample_rate
     }
 
 @app.post("/api/reset")
@@ -326,47 +526,73 @@ async def save_config(request: ConfigSaveRequest):
     config_name = request.config_name
     config = request.config
     
-    config_path = os.path.join(CONFIG_FOLDER, f"{config_name}.json")
+    # Sanitize filename to prevent directory traversal
+    safe_name = "".join(c for c in config_name if c.isalnum() or c in (' ', '-', '_')).strip()
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Invalid configuration name")
+    
+    config_path = os.path.join(CONFIG_FOLDER, f"{safe_name}.json")
     
     try:
+        # Ensure config folder exists
+        os.makedirs(CONFIG_FOLDER, exist_ok=True)
+        
         with open(config_path, 'w') as f:
             import json
             json.dump(config, f, indent=2)
+        
+        print(f"✓ Configuration saved: {config_path}")
+        
         return {
             'message': 'Configuration saved successfully',
             'config_path': str(config_path)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"✗ Failed to save configuration: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save configuration: {str(e)}")
 
 @app.get("/api/config/load")
 async def load_config(config_name: str):
     """Loads a slider configuration from a JSON file."""
-    config_path = os.path.join(CONFIG_FOLDER, f"{config_name}.json")
+    # Sanitize filename
+    safe_name = "".join(c for c in config_name if c.isalnum() or c in (' ', '-', '_')).strip()
+    config_path = os.path.join(CONFIG_FOLDER, f"{safe_name}.json")
     
     if not os.path.exists(config_path):
+        print(f"✗ Configuration not found: {config_path}")
         raise HTTPException(status_code=404, detail="Configuration not found")
         
     try:
         with open(config_path, 'r') as f:
             import json
             config = json.load(f)
+        
+        print(f"✓ Configuration loaded: {config_path}")
+        
         return {
             'config': config,
             'config_name': config_name,
             'message': 'Configuration loaded successfully'
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"✗ Failed to load configuration: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to load configuration: {str(e)}")
 
 @app.get("/api/config/list")
 async def list_configs():
     """Lists all available .json configuration files."""
     try:
+        # Ensure config folder exists
+        os.makedirs(CONFIG_FOLDER, exist_ok=True)
+        
         configs = [f.replace('.json', '') for f in os.listdir(CONFIG_FOLDER) if f.endswith('.json')]
+        
+        print(f"✓ Found {len(configs)} saved configurations")
+        
         return {'configs': configs}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"✗ Failed to list configurations: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to list configurations: {str(e)}")
 
 
 # --- Run the Server ---

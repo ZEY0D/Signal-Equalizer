@@ -44,84 +44,25 @@ export function SliderManager({
   return (
     <div className="space-y-4">
       {/* Header with Add Button */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between mb-2">
         <Label className="text-sm font-semibold">
-          Active Sliders ({sliders.length})
+          Frequency Sliders ({sliders.length})
         </Label>
         <Button
-          variant="outline"
+          variant="default"
           size="sm"
           onClick={() => onAddSlider()}
           disabled={disabled}
           className="gap-2"
         >
           <Plus className="h-3 w-3" />
-          Add Custom
+          Add Slider
         </Button>
       </div>
 
-      {/* Quick Presets */}
-      <Card className="p-3 bg-muted/30">
-        <Label className="text-xs text-muted-foreground mb-2 block">
-          Quick Add Presets:
-        </Label>
-        <div className="grid grid-cols-3 gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-xs h-7"
-            onClick={() => handleAddPreset('bass')}
-            disabled={disabled}
-          >
-            Bass
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-xs h-7"
-            onClick={() => handleAddPreset('mid')}
-            disabled={disabled}
-          >
-            Mid
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-xs h-7"
-            onClick={() => handleAddPreset('treble')}
-            disabled={disabled}
-          >
-            Treble
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-xs h-7"
-            onClick={() => handleAddPreset('lowMid')}
-            disabled={disabled}
-          >
-            Low-Mid
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-xs h-7"
-            onClick={() => handleAddPreset('highMid')}
-            disabled={disabled}
-          >
-            High-Mid
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-xs h-7"
-            onClick={() => handleAddPreset('presence')}
-            disabled={disabled}
-          >
-            Presence
-          </Button>
-        </div>
-      </Card>
+      <p className="text-xs text-muted-foreground mb-3">
+        Control center frequency, width, and gain for each slider. Visual dragging on frequency graph coming soon.
+      </p>
 
       {/* Sliders List */}
       <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2">

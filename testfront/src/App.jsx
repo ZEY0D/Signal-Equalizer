@@ -15,8 +15,10 @@ import {
 } from "@/components"
 import { Play, Pause, Square, FileUp, ZoomIn, ZoomOut, RefreshCw, Loader2 } from "lucide-react"
 import { useSignalProcessor } from "./hooks/useSignalProcessor"
+import * as api from "./services/api"
 import { healthCheck } from "./services/api"
-import { SliderManager } from "@/components"
+import { SliderManager, FrequencyGraph, SignalViewer } from "@/components"
+import Spectrogram from "@/components/Spectrogram"
 
 export default function App() {
   const [speed, setSpeed] = useState([1])
@@ -24,8 +26,19 @@ export default function App() {
   const [equalizerMode, setEqualizerMode] = useState("generic")
   const [backendStatus, setBackendStatus] = useState("checking")
   const [autoProcess, setAutoProcess] = useState(true)
+  const [frequencyScale, setFrequencyScale] = useState("linear")
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [playbackSource, setPlaybackSource] = useState("input") // 'input' or 'output'
+  const [zoomLevel, setZoomLevel] = useState(1) // Synchronized zoom for both viewers
+  const [viewReset, setViewReset] = useState(0) // Trigger to reset views
   const fileInputRef = useRef(null)
   const processTimerRef = useRef(null)
+  const audioContextRef = useRef(null)
+  const audioSourceRef = useRef(null)
+  
+  // Cache full signal data for audio playback (not downsampled)
+  const fullInputSignalRef = useRef(null)
+  const fullOutputSignalRef = useRef(null)
 
   // Use our custom hook for signal processing
   const {
@@ -45,6 +58,13 @@ export default function App() {
     removeSlider,
     reset,
   } = useSignalProcessor()
+  
+  // State for output FFT (to show frequency spectrum of processed signal)
+  const [outputFFT, setOutputFFT] = useState(null)
+  
+  // State for spectrograms
+  const [inputSpectrogram, setInputSpectrogram] = useState(null)
+  const [outputSpectrogram, setOutputSpectrogram] = useState(null)
 
   // Check backend connection on mount
   useEffect(() => {
@@ -74,14 +94,30 @@ export default function App() {
     }
   }
 
-  // Handle synthetic signal creation
+  // Handle synthetic signal creation - 20 seconds with time-segmented frequencies
   const handleCreateSynthetic = async () => {
     try {
+      // 20-second test signal divided into 5 segments of 4 seconds each:
+      // 0-4s:   100 Hz (Low rumble - should be barely audible)
+      // 4-8s:   500 Hz (Deep bass tone)
+      // 8-12s:  1000 Hz (Mid-range tone - most prominent)
+      // 12-16s: 2000 Hz (High mid tone)
+      // 16-20s: 4000 Hz (High frequency tone)
+      // Each segment is pure for surgical testing
       await createSynthetic({
-        frequencies: [100, 500, 1000, 2000],
-        duration: 2.0,
+        frequencies: [100, 500, 1000, 2000, 4000],
+        duration: 20.0,
         sample_rate: 44100,
       })
+      console.log("20-second segmented synthetic signal created")
+      alert("Test Signal Created!\n\n" +
+            "Time Segments:\n" +
+            "0-4s:   100 Hz (Low rumble)\n" +
+            "4-8s:   500 Hz (Bass tone)\n" +
+            "8-12s:  1000 Hz (Mid tone - loudest)\n" +
+            "12-16s: 2000 Hz (High mid)\n" +
+            "16-20s: 4000 Hz (High tone)\n\n" +
+            "Listen to each segment and observe the frequency graph!")
     } catch (error) {
       console.error("Failed to create synthetic signal:", error)
     }
@@ -93,10 +129,29 @@ export default function App() {
     
     try {
       await processSignal()
+      // Fetch output FFT to show processed frequency spectrum
+      try {
+        const outputFftData = await api.getOutputFFT(sessionId)
+        setOutputFFT(outputFftData)
+        console.log('✓ Output FFT fetched for comparison')
+      } catch (err) {
+        console.warn('Could not fetch output FFT:', err.message)
+      }
+      
+      // Fetch output spectrogram if spectrograms are enabled
+      if (showSpectrograms) {
+        try {
+          const outputSpectData = await api.getOutputSpectrogram(sessionId)
+          setOutputSpectrogram(outputSpectData)
+          console.log('✓ Output spectrogram fetched')
+        } catch (err) {
+          console.warn('Could not fetch output spectrogram:', err.message)
+        }
+      }
     } catch (error) {
       console.error("Processing failed:", error)
     }
-  }, [sessionId, sliders, processSignal])
+  }, [sessionId, sliders, processSignal, showSpectrograms])
 
   // Debounced auto-process function
   const triggerAutoProcess = useCallback(() => {
@@ -153,11 +208,144 @@ export default function App() {
     }
   }
   
-  // Cleanup timer on unmount
+  // Audio playback functions
+  const initAudioContext = () => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)()
+    }
+    return audioContextRef.current
+  }
+
+  const handlePlay = async (source = playbackSource) => {
+    if (!sessionId) return
+    
+    // Check if output signal exists when trying to play output
+    if (source === 'output' && !outputSignal) {
+      alert('No output signal available. Please add sliders and click "Apply Processing" first.')
+      return
+    }
+    
+    const audioCtx = initAudioContext()
+    
+    // Stop any existing playback
+    if (audioSourceRef.current) {
+      audioSourceRef.current.stop()
+    }
+
+    try {
+      // Fetch FULL signal data for audio playback (not downsampled)
+      console.log('🎵 Fetching full audio data for playback...')
+      const fullSignalData = source === 'input' 
+        ? await api.getInputSignal(sessionId, 999999999, true) // full=true
+        : await api.getOutputSignal(sessionId, 999999999, true) // full=true
+      
+      const signalData = fullSignalData.signal
+      const sampleRate = fullSignalData.sample_rate || signalInfo?.sample_rate || 44100
+      
+      console.log('🎵 Audio Playback Debug:')
+      console.log('  Source:', source)
+      console.log('  Signal length:', signalData.length, 'samples')
+      console.log('  Sample rate:', sampleRate, 'Hz')
+      console.log('  Duration:', (signalData.length / sampleRate).toFixed(2), 'seconds')
+      console.log('  Speed:', speed[0] + 'x')
+
+    // Create audio buffer
+    const buffer = audioCtx.createBuffer(1, signalData.length, sampleRate)
+    const channelData = buffer.getChannelData(0)
+    
+    // Copy signal data to buffer
+    for (let i = 0; i < signalData.length; i++) {
+      channelData[i] = signalData[i]
+    }
+
+    // Create and configure source
+    const source_node = audioCtx.createBufferSource()
+    source_node.buffer = buffer
+    source_node.playbackRate.value = speed[0]
+    source_node.connect(audioCtx.destination)
+    
+    source_node.onended = () => {
+      setIsPlaying(false)
+      audioSourceRef.current = null
+    }
+    
+    source_node.start()
+    audioSourceRef.current = source_node
+    setIsPlaying(true)
+    setPlaybackSource(source) // Update which source is playing
+    } catch (error) {
+      console.error('Audio playback failed:', error)
+      setIsPlaying(false)
+    }
+  }
+
+  const handlePause = () => {
+    if (audioSourceRef.current) {
+      audioSourceRef.current.stop()
+      audioSourceRef.current = null
+    }
+    setIsPlaying(false)
+  }
+
+  const handleStop = () => {
+    handlePause()
+  }
+
+  // Synchronized zoom controls
+  const handleZoomIn = () => {
+    setZoomLevel(prev => {
+      const newLevel = Math.min(prev * 1.5, 10)
+      return newLevel
+    })
+  }
+
+  const handleZoomOut = () => {
+    setZoomLevel(prev => {
+      const newLevel = Math.max(prev / 1.5, 0.1)
+      return newLevel
+    })
+  }
+
+  const handleResetView = () => {
+    setZoomLevel(1)
+    setViewReset(prev => prev + 1) // Trigger reset in charts
+  }
+
+  // Update playback speed in real-time
+  useEffect(() => {
+    if (audioSourceRef.current && audioSourceRef.current.playbackRate) {
+      audioSourceRef.current.playbackRate.value = speed[0]
+    }
+  }, [speed])
+
+  // Fetch input spectrogram when signal is loaded
+  useEffect(() => {
+    const fetchInputSpectrogram = async () => {
+      if (!sessionId || !inputSignal || !showSpectrograms) return
+      
+      try {
+        const inputSpectData = await api.getInputSpectrogram(sessionId)
+        setInputSpectrogram(inputSpectData)
+        console.log('✓ Input spectrogram fetched')
+      } catch (err) {
+        console.warn('Could not fetch input spectrogram:', err.message)
+      }
+    }
+    
+    fetchInputSpectrogram()
+  }, [sessionId, inputSignal, showSpectrograms])
+
+  // Cleanup timer and audio on unmount
   useEffect(() => {
     return () => {
       if (processTimerRef.current) {
         clearTimeout(processTimerRef.current)
+      }
+      if (audioSourceRef.current) {
+        audioSourceRef.current.stop()
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close()
       }
     }
   }, [])
@@ -246,21 +434,32 @@ export default function App() {
             <Card className="p-6">
               <h2 className="text-lg font-semibold mb-4">Playback & View Controls</h2>
               <div className="flex flex-wrap items-center gap-4">
+                {/* Global Playback Controls */}
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="icon" title="Play" disabled={!sessionId}>
-                    <Play className="h-4 w-4" />
-                  </Button>
-                  <Button variant="outline" size="icon" title="Pause" disabled={!sessionId}>
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    title="Pause" 
+                    disabled={!isPlaying}
+                    onClick={handlePause}
+                  >
                     <Pause className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="icon" title="Stop" disabled={!sessionId}>
+                  <Button 
+                    variant="outline" 
+                    size="icon" 
+                    title="Stop All" 
+                    disabled={!isPlaying}
+                    onClick={handleStop}
+                  >
                     <Square className="h-4 w-4" />
                   </Button>
                 </div>
 
                 <div className="h-6 border-r border-border"></div>
 
-                <div className="flex items-center gap-3 flex-1 min-w-0">
+                {/* Speed Control */}
+                <div className="flex items-center gap-3 flex-1 min-w-[200px]">
                   <Label htmlFor="speed" className="whitespace-nowrap text-sm">
                     Speed
                   </Label>
@@ -272,21 +471,38 @@ export default function App() {
                     value={speed}
                     onValueChange={setSpeed}
                     className="flex-1"
-                    disabled={!sessionId}
                   />
                   <span className="text-sm text-muted-foreground w-10 text-right">{speed[0].toFixed(1)}x</span>
                 </div>
 
                 <div className="h-6 border-r border-border"></div>
 
+                {/* View Controls */}
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="icon" title="Zoom In" disabled={!sessionId}>
+                  <Button 
+                    variant="outline" 
+                    size="icon"
+                    title="Zoom In"
+                    onClick={handleZoomIn}
+                    disabled={!inputSignal}
+                  >
                     <ZoomIn className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="icon" title="Zoom Out" disabled={!sessionId}>
+                  <Button 
+                    variant="outline"
+                    size="icon" 
+                    title="Zoom Out"
+                    onClick={handleZoomOut}
+                    disabled={!inputSignal}
+                  >
                     <ZoomOut className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" className="px-3 bg-transparent" disabled={!sessionId}>
+                  <Button 
+                    variant="outline" 
+                    className="px-3 bg-transparent"
+                    onClick={handleResetView}
+                    disabled={!inputSignal}
+                  >
                     Reset View
                   </Button>
                   <Button 
@@ -304,118 +520,159 @@ export default function App() {
 
             {/* Input Signal */}
             <Card className="p-6">
-              <h2 className="text-lg font-semibold mb-4">Input Signal (Time-Domain)</h2>
-              <div className="h-56 bg-muted rounded-lg flex items-center justify-center border border-border">
-                {inputSignal ? (
-                  <div className="text-center">
-                    <p className="text-green-600 text-sm mb-2">✓ Input Signal Loaded</p>
-                    <p className="text-xs text-muted-foreground">
-                      {inputSignal.signal.length.toLocaleString()} points • {inputSignal.sample_rate} Hz
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Chart visualization coming next...
-                    </p>
-                  </div>
-                ) : (
-                  <div className="text-center">
-                    <p className="text-muted-foreground text-sm mb-2">No signal loaded</p>
-                    <p className="text-xs text-muted-foreground">Upload a file or create a test signal</p>
-                  </div>
-                )}
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold">Input Signal (Time-Domain)</h3>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  disabled={!inputSignal}
+                  onClick={() => handlePlay('input')}
+                  className="gap-2"
+                >
+                  <Play className="h-3 w-3" />
+                  Play Input
+                </Button>
               </div>
+              <SignalViewer
+                signalData={inputSignal}
+                title=""
+                color="rgb(34, 197, 94)"
+                height={250}
+                sampleRate={signalInfo?.sample_rate || 44100}
+                zoomLevel={zoomLevel}
+                resetTrigger={viewReset}
+                syncId="signal-sync"
+              />
             </Card>
 
             {/* Input Spectrogram */}
-            <Card className="p-6">
-              <h2 className="text-lg font-semibold mb-4">Input Spectrogram</h2>
-              {showSpectrograms ? (
-                <div className="h-40 bg-muted rounded-lg flex items-center justify-center border border-border">
-                  <p className="text-muted-foreground text-sm">Spectrogram Placeholder</p>
-                </div>
-              ) : (
-                <div className="h-20 bg-muted/50 rounded-lg flex items-center justify-center border border-dashed border-border">
-                  <p className="text-muted-foreground text-xs">Hidden</p>
-                </div>
-              )}
-            </Card>
+            {showSpectrograms && (
+              <Card className="p-6">
+                <h3 className="text-sm font-semibold mb-3 text-green-600 dark:text-green-400">Input Spectrogram</h3>
+                <Spectrogram
+                  spectrogramData={inputSpectrogram}
+                  title=""
+                  height={300}
+                  maxFreq={5000}
+                />
+              </Card>
+            )}
 
             {/* Output Signal */}
             <Card className="p-6">
-              <h2 className="text-lg font-semibold mb-4">Output Signal (Time-Domain)</h2>
-              <div className="h-56 bg-muted rounded-lg flex items-center justify-center border border-border">
-                {outputSignal ? (
-                  <div className="text-center">
-                    <p className="text-green-600 text-sm mb-2">✓ Output Signal Ready</p>
-                    <p className="text-xs text-muted-foreground">
-                      {outputSignal.signal.length.toLocaleString()} points • {outputSignal.sample_rate} Hz
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Chart visualization coming next...
-                    </p>
-                  </div>
-                ) : sessionId ? (
-                  <div className="text-center">
-                    <p className="text-muted-foreground text-sm mb-2">No processing applied yet</p>
-                    <p className="text-xs text-muted-foreground">Add sliders and click "Apply Changes"</p>
-                  </div>
-                ) : (
-                  <div className="text-center">
-                    <p className="text-muted-foreground text-sm mb-2">No signal loaded</p>
-                    <p className="text-xs text-muted-foreground">Upload a file or create a test signal</p>
-                  </div>
-                )}
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold">Output Signal (Time-Domain)</h3>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  disabled={!outputSignal}
+                  onClick={() => handlePlay('output')}
+                  className="gap-2"
+                >
+                  <Play className="h-3 w-3" />
+                  Play Output
+                </Button>
               </div>
+              <SignalViewer
+                signalData={outputSignal}
+                title=""
+                color="rgb(239, 68, 68)"
+                height={250}
+                sampleRate={signalInfo?.sample_rate || 44100}
+                zoomLevel={zoomLevel}
+                resetTrigger={viewReset}
+                syncId="signal-sync"
+              />
             </Card>
 
             {/* Output Spectrogram */}
+            {showSpectrograms && (
+              <Card className="p-6">
+                <h3 className="text-sm font-semibold mb-3 text-red-600 dark:text-red-400">Output Spectrogram</h3>
+                <Spectrogram
+                  spectrogramData={outputSpectrogram}
+                  title=""
+                  height={300}
+                  maxFreq={5000}
+                />
+              </Card>
+            )}
+
+            {/* Output Frequency Spectrum - Compare with Input */}
             <Card className="p-6">
-              <h2 className="text-lg font-semibold mb-4">Output Spectrogram</h2>
-              {showSpectrograms ? (
-                <div className="h-40 bg-muted rounded-lg flex items-center justify-center border border-border">
-                  <p className="text-muted-foreground text-sm">Spectrogram Placeholder</p>
-                </div>
-              ) : (
-                <div className="h-20 bg-muted/50 rounded-lg flex items-center justify-center border border-dashed border-border">
-                  <p className="text-muted-foreground text-xs">Hidden</p>
-                </div>
-              )}
+              <div className="mb-4">
+                <h2 className="text-lg font-semibold mb-2">Output Frequency Spectrum</h2>
+                <p className="text-xs text-muted-foreground">Compare with input spectrum to see the effect of your sliders</p>
+              </div>
+              <FrequencyGraph
+                fftData={outputFFT}
+                sliders={[]}
+                scale={frequencyScale}
+                showSliderOverlays={false}
+                height={300}
+              />
             </Card>
           </div>
 
           {/* Right Column - Sidebar (~30%) */}
           <div className="flex-[30] space-y-6 min-w-0">
-            {/* Frequency Graph */}
+            {/* Input Frequency Graph */}
             <Card className="p-6">
-              <h2 className="text-lg font-semibold mb-4">Frequency Graph</h2>
-              <div className="h-56 bg-muted rounded-lg flex items-center justify-center border border-border mb-4">
-                {fftData ? (
-                  <div className="text-center">
-                    <p className="text-green-600 text-sm mb-2">✓ FFT Data Available</p>
-                    <p className="text-xs text-muted-foreground">
-                      {fftData.frequencies.length.toLocaleString()} frequency bins
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Frequency range: 0 - {Math.max(...fftData.frequencies).toFixed(0)} Hz
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Chart visualization coming next...
-                    </p>
-                  </div>
-                ) : (
-                  <div className="text-center">
-                    <p className="text-muted-foreground text-sm">No FFT data</p>
-                    <p className="text-xs text-muted-foreground">Load a signal to compute FFT</p>
-                  </div>
-                )}
+              <div className="mb-4">
+                <h2 className="text-lg font-semibold mb-2 text-green-600 dark:text-green-400">Input Frequency Spectrum</h2>
+                <p className="text-xs text-muted-foreground">Before processing - shows original signal frequencies</p>
+                <ToggleGroup 
+                  type="single" 
+                  value={frequencyScale} 
+                  onValueChange={setFrequencyScale}
+                  className="w-full"
+                >
+                  <ToggleGroupItem value="linear" className="flex-1" disabled={!fftData}>
+                    Linear
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="audiogram" className="flex-1" disabled={!fftData}>
+                    Audiogram
+                  </ToggleGroupItem>
+                </ToggleGroup>
               </div>
-              <ToggleGroup type="single" defaultValue="linear" className="w-full">
-                <ToggleGroupItem value="linear" className="flex-1" disabled={!fftData}>
-                  Linear
-                </ToggleGroupItem>
-                <ToggleGroupItem value="audiogram" className="flex-1" disabled={!fftData}>
-                  Audiogram
-                </ToggleGroupItem>
-              </ToggleGroup>
+              <FrequencyGraph
+                fftData={fftData}
+                sliders={sliders}
+                scale={frequencyScale}
+                showSliderOverlays={true}
+                height={300}
+              />
+            </Card>
+
+            {/* Real-Time Observation Guide */}
+            <Card className="p-6 bg-blue-500/5 border-blue-500/20">
+              <h2 className="text-lg font-semibold mb-3 text-blue-600 dark:text-blue-400">🔍 What to Observe</h2>
+              <div className="space-y-3 text-sm">
+                <div className="space-y-1">
+                  <p className="font-semibold text-foreground">When you MUTE a frequency (gain = 0):</p>
+                  <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
+                    <li><strong>Frequency Graph:</strong> The spike at that frequency should disappear or shrink dramatically</li>
+                    <li><strong>Output Waveform:</strong> Amplitude may decrease if that frequency was dominant</li>
+                    <li><strong>Audio:</strong> You won't hear that specific tone anymore (surgical removal!)</li>
+                  </ul>
+                </div>
+                <div className="space-y-1">
+                  <p className="font-semibold text-foreground">When you AMPLIFY a frequency (gain = 2):</p>
+                  <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
+                    <li><strong>Frequency Graph:</strong> The spike at that frequency should grow taller</li>
+                    <li><strong>Output Waveform:</strong> Overall amplitude increases, more oscillations</li>
+                    <li><strong>Audio:</strong> That tone becomes louder and more prominent</li>
+                  </ul>
+                </div>
+                <div className="p-3 bg-green-500/10 border border-green-500/20 rounded-md">
+                  <p className="font-semibold text-green-700 dark:text-green-400 mb-1">✅ Scientific Test:</p>
+                  <p className="text-xs text-muted-foreground">
+                    Create test signal → Add slider at 1000 Hz (width ~200 Hz) → Set gain to 0 → 
+                    Observe: 1000 Hz disappears, but 500 Hz and 2000 Hz remain unchanged. Listen: 
+                    you'll hear low and high tones, but NOT the 1000 Hz mid tone!
+                  </p>
+                </div>
+              </div>
             </Card>
 
             {/* Equalizer Controls */}
@@ -467,6 +724,69 @@ export default function App() {
                 disabled={!sessionId}
                 autoProcess={autoProcess}
               />
+            </Card>
+
+            {/* Configuration Save/Load */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Configuration</h2>
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Config name..."
+                    className="flex-1 px-3 py-2 text-sm rounded-md border border-border bg-background"
+                    id="config-name"
+                    disabled={!sessionId || sliders.length === 0}
+                  />
+                  <Button
+                    variant="default"
+                    size="sm"
+                    disabled={!sessionId || sliders.length === 0 || isLoading}
+                    onClick={async () => {
+                      const name = document.getElementById('config-name').value
+                      if (!name) {
+                        alert('Please enter a configuration name')
+                        return
+                      }
+                      try {
+                        await saveConfiguration(name)
+                        alert('Configuration saved successfully!')
+                        document.getElementById('config-name').value = ''
+                      } catch (err) {
+                        alert('Failed to save configuration')
+                      }
+                    }}
+                  >
+                    Save
+                  </Button>
+                </div>
+                
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  size="sm"
+                  disabled={!sessionId || isLoading}
+                  onClick={async () => {
+                    try {
+                      const configs = await listConfigurations()
+                      if (configs.length === 0) {
+                        alert('No saved configurations found')
+                        return
+                      }
+                      const names = configs.map(c => c.name).join('\\n')
+                      const selected = prompt(`Available configurations:\\n${names}\\n\\nEnter name to load:`)
+                      if (selected) {
+                        await loadConfiguration(selected)
+                        alert('Configuration loaded successfully!')
+                      }
+                    } catch (err) {
+                      alert('Failed to load configuration')
+                    }
+                  }}
+                >
+                  Load Configuration
+                </Button>
+              </div>
             </Card>
 
             {/* View Options */}
