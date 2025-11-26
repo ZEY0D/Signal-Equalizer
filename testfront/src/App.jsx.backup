@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react"
+import { useState, useRef, useEffect } from "react"
 import { 
   Button, 
   Card, 
@@ -13,19 +13,16 @@ import {
   ToggleGroup, 
   ToggleGroupItem 
 } from "@/components"
-import { Play, Pause, Square, FileUp, ZoomIn, ZoomOut, RefreshCw, Loader2 } from "lucide-react"
+import { Play, Pause, Square, FileUp, ZoomIn, ZoomOut, Plus, RefreshCw, Save, Loader2 } from "lucide-react"
 import { useSignalProcessor } from "./hooks/useSignalProcessor"
 import { healthCheck } from "./services/api"
-import { SliderManager } from "@/components"
 
 export default function App() {
   const [speed, setSpeed] = useState([1])
   const [showSpectrograms, setShowSpectrograms] = useState(true)
   const [equalizerMode, setEqualizerMode] = useState("generic")
   const [backendStatus, setBackendStatus] = useState("checking")
-  const [autoProcess, setAutoProcess] = useState(true)
   const fileInputRef = useRef(null)
-  const processTimerRef = useRef(null)
 
   // Use our custom hook for signal processing
   const {
@@ -62,13 +59,11 @@ export default function App() {
 
   // Handle file upload
   const handleFileUpload = async (event) => {
-    event.preventDefault()
     const file = event.target.files?.[0]
     if (!file) return
 
     try {
       await uploadFile(file)
-      console.log("File uploaded successfully")
     } catch (error) {
       console.error("Upload failed:", error)
     }
@@ -87,8 +82,17 @@ export default function App() {
     }
   }
 
+  // Handle slider addition
+  const handleAddSlider = () => {
+    addSlider({
+      center_freq: 1000,
+      width: 200,
+      gain: 1.0,
+    })
+  }
+
   // Handle process with debouncing
-  const handleProcess = useCallback(async () => {
+  const handleProcess = async () => {
     if (!sessionId || sliders.length === 0) return
     
     try {
@@ -96,74 +100,16 @@ export default function App() {
     } catch (error) {
       console.error("Processing failed:", error)
     }
-  }, [sessionId, sliders, processSignal])
-
-  // Debounced auto-process function
-  const triggerAutoProcess = useCallback(() => {
-    if (!autoProcess || !sessionId) return
-    
-    // Clear existing timer
-    if (processTimerRef.current) {
-      clearTimeout(processTimerRef.current)
-    }
-    
-    // Set new timer for 500ms debounce
-    processTimerRef.current = setTimeout(() => {
-      handleProcess()
-    }, 500)
-  }, [autoProcess, sessionId, handleProcess])
-
-  // Handle slider addition
-  const handleAddSlider = (preset = null) => {
-    if (preset) {
-      addSlider(preset)
-    } else {
-      addSlider({
-        center_freq: 1000,
-        width: 200,
-        gain: 1.0,
-      })
-    }
-    // Trigger auto-process after adding
-    setTimeout(() => triggerAutoProcess(), 100)
   }
-  
-  // Wrapped updateSlider to trigger auto-process
-  const handleUpdateSlider = useCallback((id, updates) => {
-    updateSlider(id, updates)
-    triggerAutoProcess()
-  }, [updateSlider, triggerAutoProcess])
-  
-  // Wrapped removeSlider to trigger auto-process
-  const handleRemoveSlider = useCallback((id) => {
-    removeSlider(id)
-    triggerAutoProcess()
-  }, [removeSlider, triggerAutoProcess])
 
   // Handle reset
   const handleReset = async () => {
     try {
       await reset()
-      // Clear any pending auto-process
-      if (processTimerRef.current) {
-        clearTimeout(processTimerRef.current)
-      }
     } catch (error) {
       console.error("Reset failed:", error)
     }
   }
-  
-  // Cleanup timer on unmount
-  useEffect(() => {
-    return () => {
-      if (processTimerRef.current) {
-        clearTimeout(processTimerRef.current)
-      }
-    }
-  }, [])
-
-  // Calculate max frequency based on signal info
-  const maxFrequency = signalInfo ? signalInfo.sample_rate / 2 : 22050
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
@@ -292,16 +238,6 @@ export default function App() {
                   <Button 
                     variant="outline" 
                     className="px-3 bg-transparent gap-2"
-                    onClick={handleReset}
-                    disabled={!sessionId || isLoading}
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                    Reset Signal
-                  </Button>
-                </div>
-              </div>
-            </Card>
-
             {/* Input Signal */}
             <Card className="p-6">
               <h2 className="text-lg font-semibold mb-4">Input Signal (Time-Domain)</h2>
@@ -324,21 +260,9 @@ export default function App() {
                 )}
               </div>
             </Card>
-
-            {/* Input Spectrogram */}
+            {/* Input Signal */}
             <Card className="p-6">
-              <h2 className="text-lg font-semibold mb-4">Input Spectrogram</h2>
-              {showSpectrograms ? (
-                <div className="h-40 bg-muted rounded-lg flex items-center justify-center border border-border">
-                  <p className="text-muted-foreground text-sm">Spectrogram Placeholder</p>
-                </div>
-              ) : (
-                <div className="h-20 bg-muted/50 rounded-lg flex items-center justify-center border border-dashed border-border">
-                  <p className="text-muted-foreground text-xs">Hidden</p>
-                </div>
-              )}
-            </Card>
-
+              <h2 className="text-lg font-semibold mb-4">Input Signal (Time-Domain)</h2>
             {/* Output Signal */}
             <Card className="p-6">
               <h2 className="text-lg font-semibold mb-4">Output Signal (Time-Domain)</h2>
@@ -365,11 +289,8 @@ export default function App() {
                   </div>
                 )}
               </div>
-            </Card>
-
-            {/* Output Spectrogram */}
-            <Card className="p-6">
-              <h2 className="text-lg font-semibold mb-4">Output Spectrogram</h2>
+            </Card>lassName="p-6">
+              <h2 className="text-lg font-semibold mb-4">Input Spectrogram</h2>
               {showSpectrograms ? (
                 <div className="h-40 bg-muted rounded-lg flex items-center justify-center border border-border">
                   <p className="text-muted-foreground text-sm">Spectrogram Placeholder</p>
@@ -380,10 +301,6 @@ export default function App() {
                 </div>
               )}
             </Card>
-          </div>
-
-          {/* Right Column - Sidebar (~30%) */}
-          <div className="flex-[30] space-y-6 min-w-0">
             {/* Frequency Graph */}
             <Card className="p-6">
               <h2 className="text-lg font-semibold mb-4">Frequency Graph</h2>
@@ -400,19 +317,94 @@ export default function App() {
                     <p className="text-xs text-muted-foreground mt-1">
                       Chart visualization coming next...
                     </p>
+            {/* Equalizer Controls */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Equalizer Controls</h2>
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="mode" className="text-sm mb-2 block">
+                    Mode
+                  </Label>
+                  <Select value={equalizerMode} onValueChange={setEqualizerMode}>
+                    <SelectTrigger id="mode">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="generic">Generic (Dynamic Sliders)</SelectItem>
+                      <SelectItem value="instruments" disabled>Musical Instruments (Coming Soon)</SelectItem>
+                      <SelectItem value="animals" disabled>Animal Sounds (Coming Soon)</SelectItem>
+                      <SelectItem value="voices" disabled>Human Voices (Coming Soon)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Slider List */}
+                <div className="space-y-2">
+                  <Label className="text-sm">Active Sliders ({sliders.length})</Label>
+                  <div className="max-h-48 overflow-y-auto space-y-2">
+                    {sliders.length === 0 ? (
+                      <p className="text-xs text-muted-foreground text-center py-4">
+                        No sliders yet. Click "Add Slider" to start.
+                      </p>
+                    ) : (
+                      sliders.map((slider) => (
+                        <div key={slider.id} className="p-3 bg-muted/50 rounded-md text-xs space-y-1">
+                          <div className="flex justify-between items-center">
+                            <span className="font-medium">Slider #{slider.id.toString().slice(-4)}</span>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0"
+                              onClick={() => removeSlider(slider.id)}
+                            >
+                              ×
+                            </Button>
+                          </div>
+                          <div>Frequency: {slider.center_freq} Hz</div>
+                          <div>Width: {slider.width} Hz</div>
+                          <div>Gain: {slider.gain.toFixed(2)}x</div>
+                        </div>
+                      ))
+                    )}
                   </div>
-                ) : (
-                  <div className="text-center">
-                    <p className="text-muted-foreground text-sm">No FFT data</p>
-                    <p className="text-xs text-muted-foreground">Load a signal to compute FFT</p>
-                  </div>
-                )}
+                </div>
+
+                <Button 
+                  variant="outline" 
+                  className="w-full bg-transparent" 
+                  onClick={handleAddSlider}
+                  disabled={!sessionId}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Slider
+                </Button>
+
+                <Button 
+                  className="w-full gap-2"
+                  onClick={handleProcess}
+                  disabled={!sessionId || sliders.length === 0 || isLoading}
+                >
+                  {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Apply Changes
+                </Button>
+              </div>
+            </Card>
+            </Card>
+          </div>
+
+          {/* Right Column - Sidebar (~30%) */}
+          <div className="flex-[30] space-y-6 min-w-0">
+            {/* Frequency Graph */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Frequency Graph</h2>
+              <div className="h-56 bg-muted rounded-lg flex items-center justify-center border border-border mb-4">
+                <p className="text-muted-foreground text-sm">Chart Placeholder</p>
               </div>
               <ToggleGroup type="single" defaultValue="linear" className="w-full">
-                <ToggleGroupItem value="linear" className="flex-1" disabled={!fftData}>
+                <ToggleGroupItem value="linear" className="flex-1">
                   Linear
                 </ToggleGroupItem>
-                <ToggleGroupItem value="audiogram" className="flex-1" disabled={!fftData}>
+                <ToggleGroupItem value="audiogram" className="flex-1">
                   Audiogram
                 </ToggleGroupItem>
               </ToggleGroup>
@@ -420,53 +412,29 @@ export default function App() {
 
             {/* Equalizer Controls */}
             <Card className="p-6">
-              <div className="mb-4">
-                <Label htmlFor="mode" className="text-sm mb-2 block font-semibold">
-                  Equalizer Mode
-                </Label>
-                <Select value={equalizerMode} onValueChange={setEqualizerMode}>
-                  <SelectTrigger id="mode">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="generic">Generic (Dynamic Sliders)</SelectItem>
-                    <SelectItem value="instruments" disabled>Musical Instruments (Coming Soon)</SelectItem>
-                    <SelectItem value="animals" disabled>Animal Sounds (Coming Soon)</SelectItem>
-                    <SelectItem value="voices" disabled>Human Voices (Coming Soon)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Auto-process toggle */}
-              <div className="flex items-center justify-between mb-4 pb-4 border-b">
-                <div className="flex items-center gap-2">
-                  <Switch 
-                    id="auto-process" 
-                    checked={autoProcess} 
-                    onCheckedChange={setAutoProcess}
-                  />
-                  <Label htmlFor="auto-process" className="text-sm cursor-pointer">
-                    Auto-process on changes
+              <h2 className="text-lg font-semibold mb-4">Equalizer Controls</h2>
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="mode" className="text-sm mb-2 block">
+                    Mode
                   </Label>
+                  <Select value={equalizerMode} onValueChange={setEqualizerMode}>
+                    <SelectTrigger id="mode">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="generic">Generic</SelectItem>
+                      <SelectItem value="instruments">Musical Instruments</SelectItem>
+                      <SelectItem value="animals">Animal Sounds</SelectItem>
+                      <SelectItem value="voices">Human Voices</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
-                {autoProcess && (
-                  <span className="text-xs text-green-600">● Live</span>
-                )}
+                <Button variant="outline" className="w-full bg-transparent" onClick={() => console.log("Add slider")}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Slider
+                </Button>
               </div>
-
-              {/* Slider Manager Component */}
-              <SliderManager
-                sliders={sliders}
-                maxFrequency={maxFrequency}
-                onAddSlider={handleAddSlider}
-                onUpdateSlider={handleUpdateSlider}
-                onRemoveSlider={handleRemoveSlider}
-                onProcessSignal={handleProcess}
-                onReset={handleReset}
-                isLoading={isLoading}
-                disabled={!sessionId}
-                autoProcess={autoProcess}
-              />
             </Card>
 
             {/* View Options */}
