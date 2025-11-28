@@ -1,0 +1,38 @@
+# Signal Equalizer - Python Dependencies
+# Student 1 (DSP Engine) Requirements
+
+# Core dependencies
+numpy>=1.21.0
+soundfile>=0.11.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6
+
+# Testing dependencies
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Validation (optional, for FFT accuracy testing)
+scipy>=1.9.0
+
+# Development dependencies
+matplotlib>=3.5.0  # For visualization/debugging
+
+# Source separation models
+demucs==3.0.6
+torch==2.0.1
+torchaudio==2.0.2
+numpy<2
+
+# Human voice separation (MultiDecoderDPRNN)
+pytorch-lightning>=2.0.0
+asteroid==0.7.0
+asteroid-filterbanks
+torchmetrics==1.8.0
+torch-stoi
+torch-optimizer<=0.3.0
+julius
+huggingface-hub
+sounddevice
+librosa
+# pb-bss-eval requires pesq which needs C++ compiler - skipping (optional for evaluation only)
