@@ -114,7 +114,14 @@ export function useSignalProcessor() {
     if (!sid) return;
 
     try {
+      console.log('🔄 Fetching output signal...');
       const data = await api.getOutputSignal(sid);
+      console.log('✓ Output signal received:', {
+        length: data?.signal?.length || data?.length,
+        sample_rate: data?.sample_rate,
+        hasTimeAxis: !!data?.time_axis,
+        maxAmplitude: data?.signal ? Math.max(...data.signal.map(Math.abs)) : 'N/A'
+      });
       setOutputSignal(data);
       return data;
     } catch (err) {
@@ -152,7 +159,12 @@ export function useSignalProcessor() {
 
     try {
       const slidersToProcess = customSliders || sliders;
+      console.log('⚙️ Processing signal with sliders:', slidersToProcess);
       const response = await api.processSignal(sessionId, slidersToProcess);
+      console.log('✓ Processing complete:', {
+        output_length: response.output_length,
+        max_magnitude: response.max_magnitude
+      });
 
       // Update FFT data with processed result
       setFftData({
@@ -162,7 +174,9 @@ export function useSignalProcessor() {
       });
 
       // Fetch the updated output signal
+      console.log('📊 Fetching updated output signal...');
       await fetchOutputSignal();
+      console.log('✅ Output signal update complete');
 
       return response;
     } catch (err) {

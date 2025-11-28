@@ -42,14 +42,23 @@ export function SignalViewer({
   zoomLevel = 1,
   resetTrigger = 0,
   syncId = null,
+  onZoomChange = null,
+  playbackProgress = 0,
+  isPlaying = false,
 }) {
   const chartRef = useRef(null)
   const [chartData, setChartData] = useState(null)
   const [chartOptions, setChartOptions] = useState(null)
+  const lastZoomLevelRef = useRef(zoomLevel)
+  const playbackLineRef = useRef(null)
 
-  // Process signal data
+  // Process signal data (only when signalData changes, not on every playback update)
   useEffect(() => {
     if (!signalData) {
+      // Only log once when transitioning to no data
+      if (chartData !== null) {
+        console.log(`📉 ${title}: No signal data`);
+      }
       setChartData(null)
       return
     }
@@ -60,27 +69,65 @@ export function SignalViewer({
     const amplitudeData = signalData.signal || signalData.amplitude
 
     if (!timeData || !amplitudeData) {
+      if (chartData !== null) {
+        console.log(`📉 ${title}: Missing time or amplitude data`);
+      }
       setChartData(null)
       return
     }
 
+    // Only log when NOT during playback updates to avoid console spam
+    if (!isPlaying || playbackProgress === 0) {
+      console.log(`📈 ${title}: Updating chart with signal data:`, {
+        points: amplitudeData.length,
+        maxAmplitude: Math.max(...amplitudeData.map(Math.abs)),
+        timeRange: [timeData[0], timeData[timeData.length - 1]]
+      });
+    }
+
+    // Convert to x,y format for proper linear x-axis handling
+    const xyData = timeData.map((time, i) => ({ x: time, y: amplitudeData[i] }))
+
+    const datasets = [
+      {
+        label: 'Amplitude',
+        data: xyData,
+        borderColor: color,
+        backgroundColor: 'transparent',
+        borderWidth: 1,
+        pointRadius: 0,
+        pointHoverRadius: 0,
+        showLine: true,
+      },
+    ]
+
+    // Add playback progress line if playing
+    if (isPlaying && playbackProgress > 0) {
+      const minAmplitude = Math.min(...amplitudeData)
+      const maxAmplitude = Math.max(...amplitudeData)
+      
+      datasets.push({
+        label: 'Playback Position',
+        data: [
+          { x: playbackProgress, y: minAmplitude },
+          { x: playbackProgress, y: maxAmplitude }
+        ],
+        borderColor: 'rgba(255, 215, 0, 0.9)',
+        backgroundColor: 'rgba(255, 215, 0, 0.1)',
+        borderWidth: 3,
+        pointRadius: 0,
+        fill: false,
+        showLine: true,
+        tension: 0,
+      })
+    }
+
     const data = {
-      labels: timeData,
-      datasets: [
-        {
-          label: 'Amplitude',
-          data: amplitudeData,
-          borderColor: color,
-          backgroundColor: 'transparent',
-          borderWidth: 1,
-          pointRadius: 0,
-          pointHoverRadius: 0,
-        },
-      ],
+      datasets: datasets,
     }
 
     setChartData(data)
-  }, [signalData, color])
+  }, [signalData, color, isPlaying, playbackProgress])
 
   // Create chart options
   useEffect(() => {
@@ -119,15 +166,27 @@ export function SignalViewer({
             wheel: {
               enabled: true,
               speed: 0.1,
+              modifierKey: null, // Allow zoom without modifier key
             },
             pinch: {
               enabled: true,
             },
             mode: 'x',
+            onZoom: ({ chart }) => {
+              // Notify parent of zoom change for synchronization
+              if (onZoomChange && chart.scales.x) {
+                const xScale = chart.scales.x
+                const range = xScale.max - xScale.min
+                const originalRange = xScale.options.max - xScale.options.min
+                const newZoomLevel = originalRange / range
+                onZoomChange(newZoomLevel)
+              }
+            },
           },
           pan: {
             enabled: true,
             mode: 'x',
+            modifierKey: null,
           },
           limits: {
             x: { min: 'original', max: 'original' },
@@ -184,11 +243,27 @@ export function SignalViewer({
   // Handle zoom synchronization
   useEffect(() => {
     const chart = chartRef.current
-    if (!chart) return
+    if (!chart || !chart.scales.x) return
 
-    // Use Chart.js zoom plugin API
-    if (zoomLevel !== 1) {
-      chart.zoom({ x: zoomLevel, y: 1 })
+    // Only update if zoomLevel actually changed (avoid infinite loops)
+    if (Math.abs(lastZoomLevelRef.current - zoomLevel) < 0.01) return
+    
+    lastZoomLevelRef.current = zoomLevel
+
+    if (zoomLevel === 1) {
+      // Reset to original view
+      chart.resetZoom()
+    } else {
+      // Apply zoom level
+      const xScale = chart.scales.x
+      const center = (xScale.min + xScale.max) / 2
+      const originalRange = xScale.options.max - xScale.options.min
+      const newRange = originalRange / zoomLevel
+      
+      chart.zoomScale('x', {
+        min: center - newRange / 2,
+        max: center + newRange / 2
+      }, 'none')
     }
   }, [zoomLevel])
 
@@ -199,6 +274,7 @@ export function SignalViewer({
 
     // Reset zoom using zoom plugin API
     chart.resetZoom()
+    lastZoomLevelRef.current = 1
   }, [resetTrigger])
 
   if (!chartData || !chartOptions) {

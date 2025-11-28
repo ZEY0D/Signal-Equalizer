@@ -23,6 +23,7 @@ import Spectrogram from "@/components/Spectrogram"
 export default function App() {
   const [speed, setSpeed] = useState([1])
   const [showSpectrograms, setShowSpectrograms] = useState(true)
+  const [showSliderOverlays, setShowSliderOverlays] = useState(true)
   const [equalizerMode, setEqualizerMode] = useState("generic")
   const [backendStatus, setBackendStatus] = useState("checking")
   const [autoProcess, setAutoProcess] = useState(true)
@@ -31,14 +32,19 @@ export default function App() {
   const [playbackSource, setPlaybackSource] = useState("input") // 'input' or 'output'
   const [zoomLevel, setZoomLevel] = useState(1) // Synchronized zoom for both viewers
   const [viewReset, setViewReset] = useState(0) // Trigger to reset views
+  const [playbackProgress, setPlaybackProgress] = useState(0) // Current playback position in seconds
   const fileInputRef = useRef(null)
   const processTimerRef = useRef(null)
   const audioContextRef = useRef(null)
   const audioSourceRef = useRef(null)
+  const playbackStartTimeRef = useRef(null)
+  const animationFrameRef = useRef(null)
   
   // Cache full signal data for audio playback (not downsampled)
   const fullInputSignalRef = useRef(null)
   const fullOutputSignalRef = useRef(null)
+  const inputCachedRef = useRef(false)
+  const outputCachedRef = useRef(false)
 
   // Use our custom hook for signal processing
   const {
@@ -57,6 +63,9 @@ export default function App() {
     updateSlider,
     removeSlider,
     reset,
+    saveConfiguration,
+    loadConfiguration,
+    listConfigurations,
   } = useSignalProcessor()
   
   // State for output FFT (to show frequency spectrum of processed signal)
@@ -65,6 +74,19 @@ export default function App() {
   // State for spectrograms
   const [inputSpectrogram, setInputSpectrogram] = useState(null)
   const [outputSpectrogram, setOutputSpectrogram] = useState(null)
+
+  // Debug: Track outputSignal changes
+  useEffect(() => {
+    if (outputSignal) {
+      console.log('🔄 App: outputSignal state updated:', {
+        length: outputSignal.signal?.length || 'N/A',
+        maxAmplitude: outputSignal.signal ? Math.max(...outputSignal.signal.map(Math.abs)) : 'N/A',
+        hasTimeAxis: !!outputSignal.time_axis
+      });
+    } else {
+      console.log('🔄 App: outputSignal is null');
+    }
+  }, [outputSignal]);
 
   // Check backend connection on mount
   useEffect(() => {
@@ -128,6 +150,10 @@ export default function App() {
     if (!sessionId || sliders.length === 0) return
     
     try {
+      // Clear output signal cache since it will change
+      fullOutputSignalRef.current = null
+      outputCachedRef.current = false
+      
       await processSignal()
       // Fetch output FFT to show processed frequency spectrum
       try {
@@ -198,6 +224,12 @@ export default function App() {
   // Handle reset
   const handleReset = async () => {
     try {
+      // Clear cached signals
+      fullInputSignalRef.current = null
+      fullOutputSignalRef.current = null
+      inputCachedRef.current = false
+      outputCachedRef.current = false
+      
       await reset()
       // Clear any pending auto-process
       if (processTimerRef.current) {
@@ -232,50 +264,87 @@ export default function App() {
       audioSourceRef.current.stop()
     }
 
+    // Set playing state immediately for responsive UI
+    setIsPlaying(true)
+    setPlaybackSource(source)
+
     try {
-      // Fetch FULL signal data for audio playback (not downsampled)
-      console.log('🎵 Fetching full audio data for playback...')
-      const fullSignalData = source === 'input' 
-        ? await api.getInputSignal(sessionId, 999999999, true) // full=true
-        : await api.getOutputSignal(sessionId, 999999999, true) // full=true
+      // ALWAYS fetch fresh output signal to ensure we have the latest processed data
+      // Input can use cache since it never changes
+      let fullSignalData
+      
+      if (source === 'input' && fullInputSignalRef.current) {
+        console.log('🎵 Using cached input signal (instant playback)')
+        fullSignalData = fullInputSignalRef.current
+      } else if (source === 'input') {
+        console.log('🎵 Fetching input audio data for playback...')
+        fullSignalData = await api.getInputSignal(sessionId, 999999999, true)
+        fullInputSignalRef.current = fullSignalData
+      } else {
+        // For output, always fetch fresh to get latest processing
+        console.log('🎵 Fetching output audio data for playback (latest processed version)...')
+        fullSignalData = await api.getOutputSignal(sessionId, 999999999, true)
+        fullOutputSignalRef.current = fullSignalData
+        outputCachedRef.current = true
+        console.log('✓ Fresh output signal loaded for playback')
+      }
       
       const signalData = fullSignalData.signal
       const sampleRate = fullSignalData.sample_rate || signalInfo?.sample_rate || 44100
       
-      console.log('🎵 Audio Playback Debug:')
+      console.log('🎵 Audio Playback:')
       console.log('  Source:', source)
       console.log('  Signal length:', signalData.length, 'samples')
       console.log('  Sample rate:', sampleRate, 'Hz')
       console.log('  Duration:', (signalData.length / sampleRate).toFixed(2), 'seconds')
       console.log('  Speed:', speed[0] + 'x')
 
-    // Create audio buffer
-    const buffer = audioCtx.createBuffer(1, signalData.length, sampleRate)
-    const channelData = buffer.getChannelData(0)
-    
-    // Copy signal data to buffer
-    for (let i = 0; i < signalData.length; i++) {
-      channelData[i] = signalData[i]
-    }
+      // Create audio buffer
+      const buffer = audioCtx.createBuffer(1, signalData.length, sampleRate)
+      const channelData = buffer.getChannelData(0)
+      
+      // Copy signal data to buffer
+      for (let i = 0; i < signalData.length; i++) {
+        channelData[i] = signalData[i]
+      }
 
-    // Create and configure source
-    const source_node = audioCtx.createBufferSource()
-    source_node.buffer = buffer
-    source_node.playbackRate.value = speed[0]
-    source_node.connect(audioCtx.destination)
-    
-    source_node.onended = () => {
-      setIsPlaying(false)
-      audioSourceRef.current = null
-    }
-    
-    source_node.start()
-    audioSourceRef.current = source_node
-    setIsPlaying(true)
-    setPlaybackSource(source) // Update which source is playing
+      // Create and configure source
+      const source_node = audioCtx.createBufferSource()
+      source_node.buffer = buffer
+      source_node.playbackRate.value = speed[0]
+      source_node.connect(audioCtx.destination)
+      
+      source_node.onended = () => {
+        setIsPlaying(false)
+        audioSourceRef.current = null
+      }
+      
+      // Start playback immediately
+      source_node.start()
+      audioSourceRef.current = source_node
+      playbackStartTimeRef.current = audioCtx.currentTime
+      
+      // Start progress animation
+      const duration = signalData.length / sampleRate
+      const updateProgress = () => {
+        if (audioSourceRef.current && audioCtx) {
+          const elapsed = audioCtx.currentTime - playbackStartTimeRef.current
+          const progress = Math.min(elapsed * speed[0], duration)
+          setPlaybackProgress(progress)
+          
+          if (progress < duration) {
+            animationFrameRef.current = requestAnimationFrame(updateProgress)
+          }
+        }
+      }
+      animationFrameRef.current = requestAnimationFrame(updateProgress)
+      
+      console.log('✓ Audio playback started')
     } catch (error) {
       console.error('Audio playback failed:', error)
       setIsPlaying(false)
+      setPlaybackProgress(0)
+      alert('Failed to play audio: ' + error.message)
     }
   }
 
@@ -284,11 +353,24 @@ export default function App() {
       audioSourceRef.current.stop()
       audioSourceRef.current = null
     }
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current)
+      animationFrameRef.current = null
+    }
     setIsPlaying(false)
   }
 
   const handleStop = () => {
-    handlePause()
+    if (audioSourceRef.current) {
+      audioSourceRef.current.stop()
+      audioSourceRef.current = null
+    }
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current)
+      animationFrameRef.current = null
+    }
+    setIsPlaying(false)
+    setPlaybackProgress(0)
   }
 
   // Synchronized zoom controls
@@ -317,6 +399,41 @@ export default function App() {
       audioSourceRef.current.playbackRate.value = speed[0]
     }
   }, [speed])
+
+  // Pre-fetch and cache full signal data for instant playback
+  useEffect(() => {
+    const cacheFullSignals = async () => {
+      if (!sessionId) return
+      
+      // Cache input signal for instant playback (only once)
+      if (inputSignal && !inputCachedRef.current) {
+        try {
+          console.log('📦 Caching full input signal for instant playback...')
+          const fullData = await api.getInputSignal(sessionId, 999999999, true)
+          fullInputSignalRef.current = fullData
+          inputCachedRef.current = true
+          console.log('✓ Input signal cached')
+        } catch (err) {
+          console.warn('Could not cache input signal:', err.message)
+        }
+      }
+      
+      // Cache output signal for instant playback (only once per processing)
+      if (outputSignal && !outputCachedRef.current) {
+        try {
+          console.log('📦 Caching full output signal for instant playback...')
+          const fullData = await api.getOutputSignal(sessionId, 999999999, true)
+          fullOutputSignalRef.current = fullData
+          outputCachedRef.current = true
+          console.log('✓ Output signal cached')
+        } catch (err) {
+          console.warn('Could not cache output signal:', err.message)
+        }
+      }
+    }
+    
+    cacheFullSignals()
+  }, [sessionId, inputSignal, outputSignal])
 
   // Fetch input spectrogram when signal is loaded
   useEffect(() => {
@@ -482,26 +599,27 @@ export default function App() {
                   <Button 
                     variant="outline" 
                     size="icon"
-                    title="Zoom In"
+                    title="Zoom In (works during playback)"
                     onClick={handleZoomIn}
-                    disabled={!inputSignal}
+                    disabled={!inputSignal && !outputSignal}
                   >
                     <ZoomIn className="h-4 w-4" />
                   </Button>
                   <Button 
                     variant="outline"
                     size="icon" 
-                    title="Zoom Out"
+                    title="Zoom Out (works during playback)"
                     onClick={handleZoomOut}
-                    disabled={!inputSignal}
+                    disabled={!inputSignal && !outputSignal}
                   >
                     <ZoomOut className="h-4 w-4" />
                   </Button>
                   <Button 
                     variant="outline" 
                     className="px-3 bg-transparent"
+                    title="Reset View (works during playback)"
                     onClick={handleResetView}
-                    disabled={!inputSignal}
+                    disabled={!inputSignal && !outputSignal}
                   >
                     Reset View
                   </Button>
@@ -542,6 +660,9 @@ export default function App() {
                 zoomLevel={zoomLevel}
                 resetTrigger={viewReset}
                 syncId="signal-sync"
+                onZoomChange={setZoomLevel}
+                playbackProgress={playbackSource === 'input' ? playbackProgress : 0}
+                isPlaying={isPlaying && playbackSource === 'input'}
               />
             </Card>
 
@@ -582,6 +703,9 @@ export default function App() {
                 zoomLevel={zoomLevel}
                 resetTrigger={viewReset}
                 syncId="signal-sync"
+                onZoomChange={setZoomLevel}
+                playbackProgress={playbackSource === 'output' ? playbackProgress : 0}
+                isPlaying={isPlaying && playbackSource === 'output'}
               />
             </Card>
 
@@ -639,7 +763,7 @@ export default function App() {
                 fftData={fftData}
                 sliders={sliders}
                 scale={frequencyScale}
-                showSliderOverlays={true}
+                showSliderOverlays={showSliderOverlays}
                 height={300}
               />
             </Card>
@@ -753,7 +877,8 @@ export default function App() {
                         alert('Configuration saved successfully!')
                         document.getElementById('config-name').value = ''
                       } catch (err) {
-                        alert('Failed to save configuration')
+                        console.error('Configuration save error:', err)
+                        alert(`Failed to save configuration: ${err.message}\n\nTip: Check if backend is running and restart it if needed.`)
                       }
                     }}
                   >
@@ -792,11 +917,19 @@ export default function App() {
             {/* View Options */}
             <Card className="p-6">
               <h2 className="text-lg font-semibold mb-4">View Options</h2>
-              <div className="flex items-center justify-between">
-                <Label htmlFor="spectrograms" className="text-sm cursor-pointer">
-                  Show/Hide Spectrograms
-                </Label>
-                <Switch id="spectrograms" checked={showSpectrograms} onCheckedChange={setShowSpectrograms} />
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="spectrograms" className="text-sm cursor-pointer">
+                    Show/Hide Spectrograms
+                  </Label>
+                  <Switch id="spectrograms" checked={showSpectrograms} onCheckedChange={setShowSpectrograms} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="slider-overlays" className="text-sm cursor-pointer">
+                    Show Slider Effects on Graph
+                  </Label>
+                  <Switch id="slider-overlays" checked={showSliderOverlays} onCheckedChange={setShowSliderOverlays} />
+                </div>
               </div>
             </Card>
           </div>

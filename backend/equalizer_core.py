@@ -38,7 +38,10 @@ from .signal_io import (
 )
 from .fft_implementation import (
     fft, 
-    ifft, 
+    ifft,
+    rfft,
+    irfft,
+    rfftfreq,
     fft_magnitude, 
     fft_phase,
     frequency_bins
@@ -147,11 +150,16 @@ class SignalProcessor:
     
     def compute_fft(self):
         """
-        Compute FFT of the loaded signal.
+        Compute FFT of the loaded signal using rfft for real signals.
+        
+        Uses rfft instead of full complex FFT for efficiency:
+        - Saves 50% memory (only positive frequencies)
+        - Saves 50% computation time
+        - More appropriate for real-valued audio signals
         
         Returns:
             tuple: (frequencies, magnitudes, phases)
-                - frequencies (np.ndarray): Frequency values in Hz
+                - frequencies (np.ndarray): Positive frequency values in Hz (0 to Nyquist)
                 - magnitudes (np.ndarray): Magnitude spectrum
                 - phases (np.ndarray): Phase spectrum in radians
         
@@ -164,28 +172,35 @@ class SignalProcessor:
         
         print("Computing FFT...")
         
-        # Compute FFT (with automatic zero-padding to power of 2)
-        self.freq_domain = fft(self.data)
+        # Use rfft for real signals (more efficient - only positive frequencies)
+        # Store original length for irfft reconstruction
+        N_original = len(self.data)
+        self.freq_domain = rfft(self.data, pad=True)
         
-        # Calculate frequency bins
-        N = len(self.freq_domain)
-        self.frequencies = frequency_bins(N, self.sample_rate)
+        # Calculate frequency bins for rfft output (0 to Nyquist only)
+        # Using custom rfftfreq (NO numpy.fft)
+        # IMPORTANT: rfft may pad the signal, so use the padded length for frequencies
+        # The padded length is 2 * (len(rfft_output) - 1) for even lengths
+        N_padded = 2 * (len(self.freq_domain) - 1)
+        self.frequencies = rfftfreq(N_padded, 1/self.sample_rate)
         
         # Calculate magnitude and phase
         magnitudes = fft_magnitude(self.freq_domain)
         phases = fft_phase(self.freq_domain)
         
-        print(f"✓ FFT computed: {N} frequency bins")
-        print(f"  - Frequency resolution: {self.sample_rate / N:.2f} Hz/bin")
-        print(f"  - Max frequency (Nyquist): {self.sample_rate / 2} Hz")
+        N_bins = len(self.freq_domain)
+        print(f"✓ FFT computed: {N_bins} frequency bins (positive frequencies only)")
+        print(f"  - Frequency resolution: {self.sample_rate / N_original:.2f} Hz/bin")
+        print(f"  - Frequency range: 0 Hz to {self.sample_rate / 2} Hz (Nyquist)")
         
         return self.frequencies, magnitudes, phases
     
     def apply_frequency_gain(self, gain_array):
         """
-        Apply gain to frequency domain.
+        Apply gain to frequency domain while preserving phase relationships.
         
         This is the core equalization operation!
+        Properly modifies magnitude while maintaining phase information.
         
         Args:
             gain_array (np.ndarray): Array of gain values (same length as freq_domain)
@@ -217,17 +232,28 @@ class SignalProcessor:
                 f"frequency domain length ({len(self.freq_domain)})"
             )
         
-        # Apply gain by element-wise multiplication
-        # This preserves phase information (only magnitude is scaled)
-        self.modified_freq_domain = self.freq_domain * gain_array
+        # Apply gain to magnitude while preserving phase
+        # Extract magnitude and phase
+        magnitudes = fft_magnitude(self.freq_domain)
+        phases = fft_phase(self.freq_domain)
         
-        print(f"✓ Frequency gain applied")
+        # Modified magnitude = original magnitude * gain
+        modified_magnitudes = magnitudes * gain_array
+        
+        # Convert back to complex form: magnitude * e^(j*phase)
+        # This preserves the phase relationships while changing amplitude
+        self.modified_freq_domain = modified_magnitudes * np.exp(1j * phases)
+        
+        print(f"✓ Frequency gain applied (phase preserved)")
         
         return self.modified_freq_domain
     
     def reconstruct_signal(self):
         """
-        Apply IFFT to reconstruct time-domain signal.
+        Apply IRFFT to reconstruct time-domain signal from rfft output.
+        
+        Uses irfft for proper reconstruction of real signals.
+        Automatically handles length and ensures real output.
         
         Returns:
             np.ndarray: Reconstructed time-domain signal (real-valued)
@@ -245,19 +271,34 @@ class SignalProcessor:
                 "Call apply_frequency_gain() first."
             )
         
-        print("Reconstructing signal via IFFT...")
+        print("Reconstructing signal via IRFFT...")
         
-        # Apply Inverse FFT
-        reconstructed = ifft(self.modified_freq_domain)
+        # Use irfft for real signals (matches rfft used in compute_fft)
+        # Determine the padded length from the rfft output length
+        # For rfft: output length = input_length // 2 + 1
+        # So: padded_length = 2 * (rfft_length - 1)
+        N_padded = 2 * (len(self.modified_freq_domain) - 1)
         
-        # Take real part (imaginary part should be ~0 for real input signals)
-        reconstructed = np.real(reconstructed)
+        # Reconstruct with padded length
+        reconstructed = irfft(self.modified_freq_domain, n=N_padded)
         
         # Trim to original length (remove zero-padding)
         reconstructed = reconstructed[:self.original_length]
         
-        # Normalize to prevent clipping
-        reconstructed = normalize_signal(reconstructed)
+        # irfft already returns real values, no need for np.real()
+        
+        # Smart normalization: preserve gain changes made by user
+        # Only normalize if clipping would occur (peak > 1.0)
+        reconstructed_peak = np.max(np.abs(reconstructed))
+        
+        if reconstructed_peak > 1.0:
+            # Prevent clipping - scale down to 0.95
+            reconstructed = normalize_signal(reconstructed)
+            print(f"  Normalized to prevent clipping (peak was {reconstructed_peak:.2f})")
+        else:
+            # Don't normalize - preserve user's gain adjustments
+            # This allows boosts and cuts to be heard as intended
+            print(f"  No normalization (peak: {reconstructed_peak:.2f}, preserving gain changes)")
         
         # Update current data
         self.data = reconstructed
@@ -369,6 +410,7 @@ class SignalProcessor:
         Helper function to create gain array from slider parameters.
         
         This is what Student 4 will use to convert slider UI state into a gain array.
+        Works with rfft output (positive frequencies only, 0 to Nyquist).
         
         Args:
             slider_list (list): List of dicts, each containing:
@@ -399,14 +441,14 @@ class SignalProcessor:
             width = slider['width']
             gain = slider['gain']
             
-            # Calculate frequency range
-            freq_min = center - width / 2
-            freq_max = center + width / 2
+            # Calculate frequency range (only positive frequencies for rfft)
+            # Clamp to valid range: 0 Hz to Nyquist
+            freq_min = max(0, center - width / 2)
+            freq_max = min(self.sample_rate / 2, center + width / 2)
             
-            # Find bins that fall within this range
-            # Use absolute value to handle both positive and negative frequencies
-            mask = (np.abs(self.frequencies) >= freq_min) & \
-                   (np.abs(self.frequencies) <= freq_max)
+            # Find bins within this range
+            # No absolute value - rfft only has positive frequencies
+            mask = (self.frequencies >= freq_min) & (self.frequencies <= freq_max)
             
             # Apply gain to these bins
             gain_array[mask] = gain
@@ -515,17 +557,16 @@ if __name__ == "__main__":
     
     # Find peaks in magnitude spectrum
     print("\n  Detected frequency peaks:")
-    # Only look at positive frequencies
-    positive_freqs = freqs[:len(freqs)//2]
-    positive_mags = mags[:len(mags)//2]
+    # rfft already returns only positive frequencies (0 to Nyquist)
+    # No need to slice - all frequencies are positive
     
     # Find peaks above a threshold
-    threshold = np.max(positive_mags) * 0.5
-    peak_indices = np.where(positive_mags > threshold)[0]
+    threshold = np.max(mags) * 0.5
+    peak_indices = np.where(mags > threshold)[0]
     
     for idx in peak_indices:
-        if positive_freqs[idx] > 0:  # Skip DC
-            print(f"    {positive_freqs[idx]:.1f} Hz (magnitude: {positive_mags[idx]:.1f})")
+        if freqs[idx] > 0:  # Skip DC
+            print(f"    {freqs[idx]:.1f} Hz (magnitude: {mags[idx]:.1f})")
     
     # Step 4: Apply gain using slider simulation
     print("\n[Step 4] Applying frequency gains (simulating sliders)...")

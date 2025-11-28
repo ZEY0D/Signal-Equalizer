@@ -58,11 +58,6 @@ export function FrequencyGraph({
 
     const { frequencies, magnitudes } = fftData
 
-    // Convert linear magnitude to dB scale: 20 * log10(magnitude)
-    // Add small epsilon to avoid log(0)
-    const epsilon = 1e-10
-    const magnitudesDB = magnitudes.map(mag => 20 * Math.log10(mag + epsilon))
-
     // Downsample data for better performance (show every Nth point)
     const maxPoints = 1000
     const step = Math.max(1, Math.floor(frequencies.length / maxPoints))
@@ -72,14 +67,14 @@ export function FrequencyGraph({
     
     for (let i = 0; i < frequencies.length; i += step) {
       sampledFrequencies.push(frequencies[i])
-      sampledMagnitudes.push(magnitudesDB[i])
+      sampledMagnitudes.push(magnitudes[i])
     }
 
     // Create chart data with x,y coordinates for proper scaling
     const data = {
       datasets: [
         {
-          label: 'Magnitude (dB)',
+          label: 'Magnitude',
           data: sampledFrequencies.map((freq, i) => ({
             x: freq,
             y: sampledMagnitudes[i]
@@ -104,22 +99,38 @@ export function FrequencyGraph({
           sampledMagnitudes
         )
         
+        // Color palette for different sliders
+        const colors = [
+          { border: 'rgba(255, 99, 132, 0.9)', bg: 'rgba(255, 99, 132, 0.15)' },   // Red
+          { border: 'rgba(54, 162, 235, 0.9)', bg: 'rgba(54, 162, 235, 0.15)' },   // Blue
+          { border: 'rgba(255, 206, 86, 0.9)', bg: 'rgba(255, 206, 86, 0.15)' },   // Yellow
+          { border: 'rgba(75, 192, 192, 0.9)', bg: 'rgba(75, 192, 192, 0.15)' },   // Teal
+          { border: 'rgba(153, 102, 255, 0.9)', bg: 'rgba(153, 102, 255, 0.15)' }, // Purple
+          { border: 'rgba(255, 159, 64, 0.9)', bg: 'rgba(255, 159, 64, 0.15)' },   // Orange
+        ]
+        const colorSet = colors[index % colors.length]
+        
+        const gainLabel = slider.gain === 0 ? 'MUTE' : 
+                         slider.gain < 1 ? `${((1 - slider.gain) * -100).toFixed(0)}%` :
+                         `+${((slider.gain - 1) * 100).toFixed(0)}%`
+        
         data.datasets.push({
-          label: `Slider ${index + 1} (${slider.center_freq}Hz)`,
+          label: `Slider ${index + 1}: ${slider.center_freq}Hz (${gainLabel})`,
           data: sliderData,
-          borderColor: `hsla(${(index * 60) % 360}, 70%, 50%, 0.8)`,
-          backgroundColor: `hsla(${(index * 60) % 360}, 70%, 50%, 0.2)`,
-          borderWidth: 2,
+          borderColor: colorSet.border,
+          backgroundColor: colorSet.bg,
+          borderWidth: 3,
+          borderDash: [5, 5],
           fill: true,
-          tension: 0.1,
+          tension: 0.3,
           pointRadius: 0,
-          spanGaps: true, // Connect points even if there are nulls
+          pointHoverRadius: 5,
         })
       })
     }
 
     setChartData(data)
-  }, [fftData, sliders, showSliderOverlays])
+  }, [fftData, sliders, showSliderOverlays]) // createSliderOverlay is memoized with scale, no need to include it
 
   // Create chart options
   useEffect(() => {
@@ -151,7 +162,7 @@ export function FrequencyGraph({
               return `${freq.toFixed(1)} Hz`
             },
             label: (context) => {
-              return `${context.dataset.label}: ${context.parsed.y.toFixed(2)} dB`
+              return `${context.dataset.label}: ${context.parsed.y.toFixed(4)}`
             },
           },
         },
@@ -172,7 +183,7 @@ export function FrequencyGraph({
             color: 'rgb(156, 163, 175)',
             callback: function(value, index, ticks) {
               if (isLogarithmic) {
-                // Show specific frequency points for audiogram
+                // Show specific frequency points for logarithmic scale
                 const freq = parseFloat(this.getLabelForValue(value))
                 if ([20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].includes(Math.round(freq))) {
                   return freq >= 1000 ? `${freq/1000}k` : freq.toString()
@@ -198,18 +209,20 @@ export function FrequencyGraph({
           display: true,
           title: {
             display: true,
-            text: 'Magnitude (dB)',
+            text: 'Magnitude',
             color: 'rgb(156, 163, 175)',
             font: { size: 12 },
           },
           ticks: {
             color: 'rgb(156, 163, 175)',
+            callback: function(value) {
+              return value.toFixed(2)
+            }
           },
           grid: {
             color: 'rgba(156, 163, 175, 0.1)',
           },
-          // Allow auto-scaling to fit the data
-          beginAtZero: false,
+          beginAtZero: scale === 'linear',
         },
       },
       animation: {
@@ -220,7 +233,7 @@ export function FrequencyGraph({
     setChartOptions(options)
   }, [scale])
 
-  // Create slider overlay data (bell curve representing the gain)
+  // Create slider overlay data (bell curve representing the gain effect)
   const createSliderOverlay = (slider, frequencies, baseMagnitudes) => {
     const { center_freq, width, gain } = slider
     
@@ -228,23 +241,26 @@ export function FrequencyGraph({
       // Calculate distance from center frequency
       const distance = Math.abs(freq - center_freq)
       
-      // If outside the width, return null (no overlay)
+      // If outside the width range, skip this point
       if (distance > width / 2) return null
       
-      // Create a bell curve for the gain
-      const normalizedDistance = (distance / (width / 2))
+      // Create a smooth bell curve using cosine (0 at edges, 1 at center)
+      const normalizedDistance = (distance / (width / 2)) // 0 at center, 1 at edge
       const bellCurve = Math.cos(normalizedDistance * Math.PI / 2) ** 2
       
-      // Calculate gain in dB (gain of 1.0 = 0dB, 2.0 = +6dB, 0.5 = -6dB)
-      const gainDB = 20 * Math.log10(gain)
+      // Calculate the gain effect at this frequency (linear magnitude)
+      // gain of 1.0 = no change, 2.0 = 2x louder, 0.5 = half as loud
+      const gainEffect = gain * bellCurve + (1 - bellCurve)
       
-      // Apply to base magnitude
+      // Show the modified magnitude
       const baseMag = baseMagnitudes[i] || 0
+      const modifiedMag = baseMag * gainEffect
+      
       return {
         x: freq,
-        y: baseMag + (gainDB * bellCurve)
+        y: modifiedMag
       }
-    }).filter(point => point !== null) // Remove null points
+    }).filter(point => point !== null) // Remove null points outside width
   }
 
   if (!chartData || !chartOptions) {

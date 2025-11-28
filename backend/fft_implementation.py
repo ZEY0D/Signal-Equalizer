@@ -166,7 +166,7 @@ def fft(x, pad=True):
     return fft_cooley_tukey(x)
 
 
-def ifft(X):
+def ifft(X, pad=True):
     """
     Inverse Fast Fourier Transform.
     
@@ -181,6 +181,7 @@ def ifft(X):
     
     Args:
         X (np.ndarray): Frequency-domain signal (complex)
+        pad (bool): If True, automatically pad to next power of 2. Default True.
     
     Returns:
         np.ndarray: Time-domain signal (complex, but imaginary part ≈ 0 for real inputs)
@@ -191,12 +192,26 @@ def ifft(X):
         >>> np.allclose(signal, reconstructed.real)  # True
     """
     X = np.asarray(X, dtype=complex)
+    original_len = len(X)
+    
+    # Apply same padding logic as fft for consistency
+    if pad:
+        target_len = next_power_of_2(original_len)
+        if target_len != original_len:
+            X_padded = np.zeros(target_len, dtype=complex)
+            X_padded[:original_len] = X
+            X = X_padded
+    else:
+        # Check if length is power of 2
+        if len(X) & (len(X) - 1) != 0:
+            raise ValueError(f"Input length must be power of 2 when pad=False, got {len(X)}")
+    
     N = len(X)
     
     # Step 1: Take complex conjugate
     X_conj = np.conj(X)
     
-    # Step 2: Apply FFT
+    # Step 2: Apply FFT (now guaranteed to be power of 2)
     x_conj = fft_cooley_tukey(X_conj)
     
     # Step 3: Take conjugate again and normalize
@@ -205,7 +220,7 @@ def ifft(X):
     return x
 
 
-def rfft(x):
+def rfft(x, pad=True):
     """
     Real FFT - Optimized FFT for real-valued signals.
     
@@ -214,16 +229,21 @@ def rfft(x):
     
     Args:
         x (np.ndarray): Real-valued time-domain signal
+        pad (bool): If True, automatically pad to next power of 2. Default True.
     
     Returns:
         np.ndarray: Frequency-domain (only positive frequencies)
+    
+    Note:
+        If pad=True, the returned length will be based on the padded signal length.
+        Use rfftfreq(len(padded_signal), 1/sr) to get correct frequencies.
     
     Example:
         >>> signal = np.sin(2 * np.pi * 5 * np.linspace(0, 1, 100))
         >>> freq = rfft(signal)  # Returns only half the spectrum
     """
-    # Compute full FFT
-    X_full = fft(x)
+    # Compute full FFT with specified padding
+    X_full = fft(x, pad=pad)
     
     # Return only positive frequencies (plus DC and Nyquist)
     N = len(X_full)
@@ -237,26 +257,52 @@ def irfft(X, n=None):
     Reconstructs a real signal from its positive-frequency components.
     
     Args:
-        X (np.ndarray): Positive frequency components
-        n (int, optional): Desired output length. If None, assumes even length.
+        X (np.ndarray): Positive frequency components (length n//2 + 1)
+        n (int, optional): Desired output length. If None, inferred from len(X).
+                          For even n: X has n//2 + 1 elements
+                          For odd n:  X has (n+1)//2 elements
     
     Returns:
-        np.ndarray: Real-valued time-domain signal
+        np.ndarray: Real-valued time-domain signal of length n
+    
+    Note:
+        If n is not provided, we assume even length: n = 2 * (len(X) - 1)
+        This may not be correct for odd-length original signals!
     """
+    X = np.asarray(X, dtype=complex)
+    
     if n is None:
+        # Assume even length (most common case for spectrograms)
+        # For even n: len(X) = n//2 + 1, so n = 2 * (len(X) - 1)
         n = 2 * (len(X) - 1)
+    
+    # Validate input length
+    expected_len = n // 2 + 1
+    if len(X) != expected_len:
+        raise ValueError(
+            f"For n={n}, expected {expected_len} frequency components, got {len(X)}"
+        )
     
     # Reconstruct full spectrum (create negative frequencies)
     X_full = np.zeros(n, dtype=complex)
+    
+    # Copy positive frequencies
     X_full[:len(X)] = X
     
-    # Mirror for negative frequencies (excluding DC and Nyquist)
-    X_full[len(X):] = np.conj(X[1:len(X)-1][::-1])
+    # Mirror for negative frequencies
+    # For even n: mirror X[1] to X[n//2-1] to positions X[n//2+1] to X[n-1]
+    # For odd n:  mirror X[1] to X[(n-1)//2] to positions X[(n+1)//2] to X[n-1]
+    if n % 2 == 0:
+        # Even: X_full[n//2+1:] = conj(X[n//2-1:0:-1])
+        X_full[len(X):] = np.conj(X[-2:0:-1])
+    else:
+        # Odd: X_full[(n+1)//2:] = conj(X[(n-1)//2:0:-1])
+        X_full[len(X):] = np.conj(X[-1:0:-1])
     
-    # Apply IFFT
-    x = ifft(X_full)
+    # Apply IFFT with padding disabled (we already have correct length)
+    x = ifft(X_full, pad=False)
     
-    # Return real part (imaginary should be ~0)
+    # Return real part (imaginary should be ~0 for properly symmetric input)
     return np.real(x)
 
 
@@ -313,19 +359,21 @@ def frequency_bins(n, sample_rate):
     """
     Generate frequency bins for FFT output (CUSTOM IMPLEMENTATION - NO NUMPY.FFT).
     
-    This implements the exact same logic as np.fft.fftfreq but from scratch
-    to comply with project requirements.
+    Returns frequencies in the EXACT order of FFT output bins:
+    [0, +df, +2df, ..., +Nyquist or +(n-1)df, -Nyquist or -(n-1)df, ..., -2df, -df]
+    
+    This matches np.fft.fftfreq behavior exactly.
     
     Args:
         n (int): Number of samples (FFT length)
         sample_rate (int): Sampling rate in Hz
     
     Returns:
-        np.ndarray: Frequency values in Hz for each bin
+        np.ndarray: Frequency values in Hz for each bin in FFT output order
     
     Example:
         >>> freqs = frequency_bins(8, 16)
-        >>> print(freqs)  # [0, 2, 4, 6, -8, -6, -4, -2] Hz
+        >>> print(freqs)  # [0, 2, 4, 6, -8, -6, -4, -2] Hz (matches FFT bin order)
     """
     if n <= 0:
         return np.array([])
@@ -333,23 +381,54 @@ def frequency_bins(n, sample_rate):
     # Calculate the frequency resolution (distance between bins)
     freq_resolution = sample_rate / n
     
-    # For even n: [0, 1, 2, ..., n/2-1, -n/2, -n/2+1, ..., -2, -1]
-    # For odd n:  [0, 1, 2, ..., (n-1)/2, -(n-1)/2, -(n-1)/2+1, ..., -2, -1]
+    # Pre-allocate result array for efficiency
+    results = np.empty(n)
     
     if n % 2 == 0:  # Even length
-        # Positive frequencies: 0, 1, 2, ..., n/2-1
-        positive_part = np.arange(0, n // 2) * freq_resolution
-        # Negative frequencies: -n/2, -n/2+1, ..., -1
-        negative_part = np.arange(-n // 2, 0) * freq_resolution
+        # First half: [0, 1, 2, ..., n/2-1] * freq_resolution
+        results[:n//2] = np.arange(0, n//2) * freq_resolution
+        # Second half: [-n/2, -n/2+1, ..., -1] * freq_resolution
+        results[n//2:] = np.arange(-n//2, 0) * freq_resolution
     else:  # Odd length
-        # Positive frequencies: 0, 1, 2, ..., (n-1)/2
-        positive_part = np.arange(0, (n + 1) // 2) * freq_resolution
-        # Negative frequencies: -(n-1)/2, -(n-1)/2+1, ..., -1
-        negative_part = np.arange(-(n - 1) // 2, 0) * freq_resolution
+        # First half: [0, 1, 2, ..., (n-1)/2] * freq_resolution
+        results[:(n+1)//2] = np.arange(0, (n+1)//2) * freq_resolution
+        # Second half: [-(n-1)/2, -(n-1)/2+1, ..., -1] * freq_resolution
+        results[(n+1)//2:] = np.arange(-(n-1)//2, 0) * freq_resolution
 
-    # Combine: [positive_part, negative_part]
-    # This ordering matches the standard FFT output format
-    return np.concatenate((positive_part, negative_part))
+    return results
+
+def rfftfreq(n, d=1.0):
+    """
+    Return frequency bins for real FFT (CUSTOM IMPLEMENTATION - NO NUMPY.FFT).
+    
+    For real signals, we only need positive frequencies since the spectrum is symmetric.
+    Returns frequencies from 0 to Nyquist frequency.
+    
+    This replaces np.fft.rfftfreq to comply with project requirements.
+    
+    Args:
+        n (int): Window length (number of samples in time domain)
+        d (float): Sample spacing (1/sample_rate). Default is 1.0.
+    
+    Returns:
+        np.ndarray: Array of length n//2 + 1 containing positive frequencies only
+    
+    Example:
+        >>> freqs = rfftfreq(8, 1/16)  # 8 samples at 16 Hz
+        >>> print(freqs)  # [0, 2, 4, 6, 8] Hz
+    """
+    if n <= 0:
+        return np.array([])
+    
+    # For rfft, we return only positive frequencies: [0, 1, 2, ..., n//2]
+    # Number of positive frequency bins including DC and Nyquist
+    num_positive = n // 2 + 1
+    
+    # Calculate frequency values
+    freq_resolution = 1.0 / (n * d)
+    
+    return np.arange(num_positive) * freq_resolution
+
 
 def fftshift(X):
     """
@@ -388,6 +467,7 @@ def validate_frequency_bins():
             (9, 18),    # Odd length
             (16, 44100), # Common audio case
             (512, 48000), # Typical FFT size
+            (1024, 44100), # Common spectrogram window
         ]
         
         for n, sr in test_cases:
@@ -401,8 +481,8 @@ def validate_frequency_bins():
             
             # Compare
             error = np.max(np.abs(our_freqs - numpy_freqs))
-            print(f"  Our result:   {our_freqs}")
-            print(f"  NumPy result: {numpy_freqs}")
+            print(f"  Our result:   {our_freqs[:5]}...{our_freqs[-3:]}")
+            print(f"  NumPy result: {numpy_freqs[:5]}...{numpy_freqs[-3:]}")
             print(f"  Max error: {error:.2e}")
             
             if error < 1e-10:
@@ -418,6 +498,142 @@ def validate_frequency_bins():
         print("⚠️ numpy.fft not available for validation")
         print("  Our implementation should work correctly")
         return True
+
+
+def validate_rfftfreq():
+    """
+    Validate our custom rfftfreq against numpy.fft.rfftfreq.
+    """
+    print("=" * 60)
+    print("rfftfreq Validation Against numpy.fft.rfftfreq")
+    print("=" * 60)
+    
+    try:
+        import numpy.fft
+        
+        # Test cases
+        test_cases = [
+            (8, 16),      # Even length
+            (9, 18),      # Odd length
+            (1024, 44100), # Common spectrogram window
+            (512, 48000),  # Another typical size
+        ]
+        
+        for n, sr in test_cases:
+            print(f"\n[Test] n={n}, sample_rate={sr}")
+            
+            # Our implementation
+            our_freqs = rfftfreq(n, 1/sr)
+            
+            # NumPy's implementation (for validation only)
+            numpy_freqs = numpy.fft.rfftfreq(n, 1/sr)
+            
+            # Compare
+            error = np.max(np.abs(our_freqs - numpy_freqs))
+            print(f"  Our result:   {our_freqs[:5]}...{our_freqs[-3:]}")
+            print(f"  NumPy result: {numpy_freqs[:5]}...{numpy_freqs[-3:]}")
+            print(f"  Lengths: our={len(our_freqs)}, numpy={len(numpy_freqs)}")
+            print(f"  Max error: {error:.2e}")
+            
+            if error < 1e-10:
+                print("  ✅ PASSED")
+            else:
+                print(f"  ❌ FAILED - Error too large: {error}")
+                return False
+                
+        print("\n✅ All rfftfreq tests PASSED!")
+        return True
+        
+    except ImportError:
+        print("⚠️ numpy.fft not available for validation")
+        print("  Our implementation should work correctly")
+        return True
+
+
+def validate_spectrogram_calculation():
+    """
+    Test spectrogram calculation with known frequency signals.
+    """
+    print("=" * 60)
+    print("Spectrogram Calculation Test")
+    print("=" * 60)
+    
+    sample_rate = 1000  # 1000 Hz
+    duration = 2.0
+    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+    
+    # Create test signal with known frequencies
+    signal = (np.sin(2 * np.pi * 50 * t) +   # 50 Hz
+              np.sin(2 * np.pi * 100 * t) +  # 100 Hz
+              np.sin(2 * np.pi * 300 * t))   # 300 Hz
+    
+    print(f"\n[Test] Signal: {len(signal)} samples at {sample_rate} Hz")
+    print(f"  Known frequencies: 50 Hz, 100 Hz, 300 Hz")
+    
+    # Calculate spectrogram
+    window_size = 256
+    hop_size = 128
+    num_windows = (len(signal) - window_size) // hop_size + 1
+    
+    spectrogram = []
+    for i in range(num_windows):
+        start = i * hop_size
+        end = start + window_size
+        if end > len(signal):
+            break
+        
+        window = signal[start:end]
+        hann = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(window_size) / window_size)
+        windowed = window * hann
+        
+        # Use our custom FFT WITHOUT padding
+        fft_result = fft(windowed, pad=False)
+        magnitude = np.abs(fft_result[:window_size//2 + 1])
+        spectrogram.append(magnitude)
+    
+    # Get frequency axis using our custom rfftfreq
+    freqs = rfftfreq(window_size, 1/sample_rate)
+    
+    print(f"  Spectrogram shape: {len(spectrogram)} windows x {len(freqs)} frequencies")
+    print(f"  Frequency range: {freqs[0]:.1f} Hz to {freqs[-1]:.1f} Hz")
+    
+    # Analyze middle time slice
+    mid_idx = len(spectrogram) // 2
+    freq_response = np.array(spectrogram[mid_idx])
+    
+    # Find peaks
+    peaks = []
+    for i in range(2, len(freq_response)-2):
+        if (freq_response[i] > freq_response[i-1] and 
+            freq_response[i] > freq_response[i+1] and
+            freq_response[i] > 0.1 * np.max(freq_response)):
+            peaks.append((freqs[i], freq_response[i]))
+    
+    peaks.sort(key=lambda x: x[1], reverse=True)
+    detected_freqs = [f for f, _ in peaks[:3]]
+    
+    print(f"  Detected peaks: {[f'{f:.1f} Hz' for f in detected_freqs]}")
+    
+    # Verify peaks are close to expected
+    expected = [50, 100, 300]
+    tolerance = 10  # Hz
+    
+    success = True
+    for exp_freq in expected:
+        closest = min(detected_freqs, key=lambda x: abs(x - exp_freq))
+        error = abs(closest - exp_freq)
+        if error < tolerance:
+            print(f"  ✅ Found {exp_freq} Hz peak at {closest:.1f} Hz (error: {error:.1f} Hz)")
+        else:
+            print(f"  ❌ Failed to find {exp_freq} Hz peak (closest: {closest:.1f} Hz, error: {error:.1f} Hz)")
+            success = False
+    
+    if success:
+        print("\n✅ Spectrogram test PASSED!")
+    else:
+        print("\n❌ Spectrogram test FAILED!")
+    
+    return success
 
 
 def validate_fft(tolerance=1e-10):
@@ -543,11 +759,20 @@ if __name__ == "__main__":
     # Run full validation
     print("\n")
     try:
-        # First validate frequency bins
+        # Validate frequency bins
         validate_frequency_bins()
         print("\n")
         
+        # Validate rfftfreq
+        validate_rfftfreq()
+        print("\n")
+        
+        # Validate spectrogram calculation
+        validate_spectrogram_calculation()
+        print("\n")
+        
+        # Validate FFT/IFFT
         validate_fft()
-    except ImportError:
-        print("⚠ scipy not available, skipping validation")
+    except ImportError as e:
+        print(f"⚠ Missing dependency: {e}")
         print("  (Install scipy to run validation: pip install scipy)")

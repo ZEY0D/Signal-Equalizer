@@ -14,7 +14,7 @@ export const Select = ({ children, value, onValueChange }) => {
 }
 
 export const SelectTrigger = React.forwardRef(
-  ({ className, children, isOpen, setIsOpen, ...props }, ref) => {
+  ({ className, children, isOpen, setIsOpen, value, onValueChange, ...props }, ref) => {
     return (
       <div className="relative">
         <button

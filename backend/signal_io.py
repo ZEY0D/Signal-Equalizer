@@ -132,15 +132,18 @@ def convert_to_mono(data):
     raise ValueError(f"Unexpected audio data shape: {data.shape}")
 
 
-def normalize_signal(data, target_level=0.95):
+def normalize_signal(data, target_level=0.95, silence_threshold=1e-6):
     """
     Normalize audio signal to a target peak level.
     
     This prevents clipping (values exceeding ±1.0) which causes distortion.
+    If the signal is effectively silent (below threshold), returns it unchanged
+    to avoid amplifying numerical noise.
     
     Args:
         data (np.ndarray): Audio samples
         target_level (float): Target peak level (default: 0.95 to leave headroom)
+        silence_threshold (float): Below this peak, signal is considered silent (default: 1e-6)
     
     Returns:
         np.ndarray: Normalized audio (peak amplitude = target_level)
@@ -153,8 +156,8 @@ def normalize_signal(data, target_level=0.95):
     # Find current peak amplitude
     peak = np.max(np.abs(data))
     
-    # Avoid division by zero
-    if peak == 0:
+    # If signal is effectively silent (muted or numerical noise), don't amplify
+    if peak < silence_threshold:
         return data
     
     # Scale to target level
