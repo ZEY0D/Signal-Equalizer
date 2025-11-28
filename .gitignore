@@ -1,0 +1,120 @@
+# =========================
+# Python Backend
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+music-eq-backend/venv/
+music-eq-backend/env/
+music-eq-backend/.venv/
+
+# Python packaging
+*.egg-info/
+music-eq-backend/dist/
+music-eq-backend/build/
+
+# =========================
+# Node / Frontend
+# =========================
+music-eq-frontend/node_modules/
+music-eq-frontend/dist/
+music-eq-frontend/dist-ssr/
+music-eq-frontend/*.local
+
+# Build output
+music-eq-frontend/build/
+
+# =========================
+# 🚨 CRITICAL: Audio Files (These are HUGE!)
+# =========================
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.aac
+*.m4a
+
+# Uploads and outputs directories (runtime generated files)
+music-eq-backend/uploads/
+music-eq-backend/outputs/
+music-eq-backend/configs/
+
+# =========================
+# AI Models & Checkpoints (VERY LARGE!)
+# =========================
+*.pt
+*.pth
+*.h5
+*.ckpt
+*.pb
+*.onnx
+*.bin
+*.safetensors
+
+# Model directories
+music-eq-backend/models/*/checkpoints/
+music-eq-backend/models/*/pretrained/
+music-eq-backend/models/**/*.pt
+music-eq-backend/models/**/*.pth
+
+# =========================
+# Data / Numpy files
+# =========================
+*.npy
+*.npz
+*.pkl
+*.pickle
+
+# =========================
+# Spectrograms & Images
+# =========================
+music-eq-backend/outputs/spectrograms/
+*.png
+*.jpg
+*.jpeg
+
+# =========================
+# Environment / Secrets
+# =========================
+.env
+.env.local
+.env.*.local
+*.env
+config.json
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# =========================
+# OS Files
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Test outputs
+# =========================
+music-eq-backend/test_output_*.wav

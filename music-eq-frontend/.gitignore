@@ -22,3 +22,58 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+
+
+# Packaging
+*.egg-info/
+dist/
+build/
+
+# =========================
+# Node / Frontend
+# =========================
+node_modules/
+
+
+
+# Build output
+dist/
+build/
+
+# =========================
+# Audio / Model / Dataset files
+# =========================
+*.pt
+*.pth
+*.h5
+*.ckpt
+*.wav
+*.mp3
+*.flac
+*.npy
+
+# =========================
+# Environment / Config
+# =========================
+.env
+config.json
+*.env
+
+# =========================
+# IDE / System files
+# =========================
+.vscode/
+
+Thumbs.db

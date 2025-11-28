@@ -1,0 +1,31 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Audio files (generated at runtime)
+uploads/
+outputs/
+configs/
+*.wav
+*.mp3
+*.flac
+
+# AI models (too large for git)
+models/*/checkpoints/
+models/*/pretrained/
+models/**/*.pt
+models/**/*.pth
+*.h5
+*.ckpt
+
+# Test files
+test_output_*.wav
+
+# Environment
+.env
