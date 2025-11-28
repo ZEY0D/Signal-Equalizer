@@ -45,6 +45,9 @@ export default function App() {
   const fullOutputSignalRef = useRef(null)
   const inputCachedRef = useRef(false)
   const outputCachedRef = useRef(false)
+  
+  // Store latest slider state for debounced processing
+  const latestSlidersRef = useRef([])
 
   // Use our custom hook for signal processing
   const {
@@ -67,6 +70,11 @@ export default function App() {
     loadConfiguration,
     listConfigurations,
   } = useSignalProcessor()
+  
+  // Keep latest sliders in ref for debounced processing
+  useEffect(() => {
+    latestSlidersRef.current = sliders
+  }, [sliders])
   
   // State for output FFT (to show frequency spectrum of processed signal)
   const [outputFFT, setOutputFFT] = useState(null)
@@ -146,15 +154,17 @@ export default function App() {
   }
 
   // Handle process with debouncing
-  const handleProcess = useCallback(async () => {
-    if (!sessionId || sliders.length === 0) return
+  const handleProcess = useCallback(async (customSliders = null) => {
+    // Always use the latest sliders from ref to avoid stale state during debounce
+    const slidersToUse = customSliders || latestSlidersRef.current
+    if (!sessionId || slidersToUse.length === 0) return
     
     try {
       // Clear output signal cache since it will change
       fullOutputSignalRef.current = null
       outputCachedRef.current = false
       
-      await processSignal()
+      await processSignal(slidersToUse)
       // Fetch output FFT to show processed frequency spectrum
       try {
         const outputFftData = await api.getOutputFFT(sessionId)
@@ -211,9 +221,26 @@ export default function App() {
   
   // Wrapped updateSlider to trigger auto-process
   const handleUpdateSlider = useCallback((id, updates) => {
-    updateSlider(id, updates)
-    triggerAutoProcess()
-  }, [updateSlider, triggerAutoProcess])
+    // Get updated sliders immediately (before React state finishes updating)
+    const updatedSliders = updateSlider(id, updates)
+    
+    // Store in ref immediately for debounced processing
+    if (updatedSliders) {
+      latestSlidersRef.current = updatedSliders
+    }
+    
+    // Pass updated sliders directly to avoid stale state
+    if (autoProcess && updatedSliders) {
+      // Clear existing timer
+      if (processTimerRef.current) {
+        clearTimeout(processTimerRef.current)
+      }
+      // Debounce - will use latest sliders from ref
+      processTimerRef.current = setTimeout(() => {
+        handleProcess()
+      }, 500)
+    }
+  }, [updateSlider, autoProcess, handleProcess])
   
   // Wrapped removeSlider to trigger auto-process
   const handleRemoveSlider = useCallback((id) => {
@@ -326,11 +353,18 @@ export default function App() {
       
       // Start progress animation
       const duration = signalData.length / sampleRate
+      let lastUpdate = 0
       const updateProgress = () => {
         if (audioSourceRef.current && audioCtx) {
           const elapsed = audioCtx.currentTime - playbackStartTimeRef.current
           const progress = Math.min(elapsed * speed[0], duration)
-          setPlaybackProgress(progress)
+          
+          // Throttle updates to ~30 FPS to avoid excessive re-renders
+          const now = performance.now()
+          if (now - lastUpdate > 33) {
+            setPlaybackProgress(progress)
+            lastUpdate = now
+          }
           
           if (progress < duration) {
             animationFrameRef.current = requestAnimationFrame(updateProgress)
@@ -375,23 +409,22 @@ export default function App() {
 
   // Synchronized zoom controls
   const handleZoomIn = () => {
-    setZoomLevel(prev => {
-      const newLevel = Math.min(prev * 1.5, 10)
-      return newLevel
-    })
+    setZoomLevel(prev => Math.min(prev * 1.5, 10))
   }
 
   const handleZoomOut = () => {
-    setZoomLevel(prev => {
-      const newLevel = Math.max(prev / 1.5, 0.1)
-      return newLevel
-    })
+    setZoomLevel(prev => Math.max(prev / 1.5, 0.1))
   }
 
   const handleResetView = () => {
     setZoomLevel(1)
-    setViewReset(prev => prev + 1) // Trigger reset in charts
+    setViewReset(prev => prev + 1)
   }
+  
+  // Handle zoom change from charts (wheel/pinch) - memoized to avoid loops
+  const handleChartZoom = useCallback((newZoomLevel) => {
+    setZoomLevel(newZoomLevel)
+  }, [])
 
   // Update playback speed in real-time
   useEffect(() => {
@@ -660,7 +693,7 @@ export default function App() {
                 zoomLevel={zoomLevel}
                 resetTrigger={viewReset}
                 syncId="signal-sync"
-                onZoomChange={setZoomLevel}
+                onZoomChange={handleChartZoom}
                 playbackProgress={playbackSource === 'input' ? playbackProgress : 0}
                 isPlaying={isPlaying && playbackSource === 'input'}
               />
@@ -703,7 +736,7 @@ export default function App() {
                 zoomLevel={zoomLevel}
                 resetTrigger={viewReset}
                 syncId="signal-sync"
-                onZoomChange={setZoomLevel}
+                onZoomChange={handleChartZoom}
                 playbackProgress={playbackSource === 'output' ? playbackProgress : 0}
                 isPlaying={isPlaying && playbackSource === 'output'}
               />

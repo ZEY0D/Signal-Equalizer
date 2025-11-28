@@ -234,6 +234,7 @@ export function FrequencyGraph({
   }, [scale])
 
   // Create slider overlay data (bell curve representing the gain effect)
+  // MUST match backend algorithm in equalizer_core.py create_gain_array_from_sliders()
   const createSliderOverlay = (slider, frequencies, baseMagnitudes) => {
     const { center_freq, width, gain } = slider
     
@@ -244,17 +245,22 @@ export function FrequencyGraph({
       // If outside the width range, skip this point
       if (distance > width / 2) return null
       
-      // Create a smooth bell curve using cosine (0 at edges, 1 at center)
-      const normalizedDistance = (distance / (width / 2)) // 0 at center, 1 at edge
-      const bellCurve = Math.cos(normalizedDistance * Math.PI / 2) ** 2
+      // Normalized distance: 0 at center, 1 at edge
+      const normalizedDist = distance / (width / 2)
       
-      // Calculate the gain effect at this frequency (linear magnitude)
-      // gain of 1.0 = no change, 2.0 = 2x louder, 0.5 = half as loud
-      const gainEffect = gain * bellCurve + (1 - bellCurve)
+      // Bell curve using raised cosine (smooth transition)
+      // 1.0 at center, smoothly drops to 0 at edges
+      // MATCHES backend: 0.5 * (1 + np.cos(np.pi * normalized_dist))
+      const bellCurve = 0.5 * (1 + Math.cos(Math.PI * normalizedDist))
+      
+      // Calculate effective gain at this frequency
+      // Full gain at center, unity gain (no effect) at edges
+      // MATCHES backend: 1.0 + (gain - 1.0) * bell_curve
+      const effectiveGain = 1.0 + (gain - 1.0) * bellCurve
       
       // Show the modified magnitude
       const baseMag = baseMagnitudes[i] || 0
-      const modifiedMag = baseMag * gainEffect
+      const modifiedMag = baseMag * effectiveGain
       
       return {
         x: freq,

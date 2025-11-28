@@ -412,6 +412,10 @@ class SignalProcessor:
         This is what Student 4 will use to convert slider UI state into a gain array.
         Works with rfft output (positive frequencies only, 0 to Nyquist).
         
+        IMPORTANT: When sliders overlap, their gains are MULTIPLIED (not replaced),
+        simulating real analog equalizers where filters cascade.
+        Uses smooth bell-curve transitions instead of rectangular windows.
+        
         Args:
             slider_list (list): List of dicts, each containing:
                 - 'center_freq' (float): Center frequency in Hz
@@ -436,22 +440,39 @@ class SignalProcessor:
         gain_array = np.ones(len(self.frequencies))
         
         # Apply each slider's gain to its frequency range
+        # MULTIPLY gains when sliders overlap (like real analog EQ)
         for slider in slider_list:
             center = slider['center_freq']
             width = slider['width']
             gain = slider['gain']
             
-            # Calculate frequency range (only positive frequencies for rfft)
-            # Clamp to valid range: 0 Hz to Nyquist
-            freq_min = max(0, center - width / 2)
-            freq_max = min(self.sample_rate / 2, center + width / 2)
+            # Debug logging
+            print(f"  Slider: {center:.1f} Hz ± {width/2:.1f} Hz, gain = {gain:.2f}")
             
-            # Find bins within this range
-            # No absolute value - rfft only has positive frequencies
-            mask = (self.frequencies >= freq_min) & (self.frequencies <= freq_max)
-            
-            # Apply gain to these bins
-            gain_array[mask] = gain
+            # Create smooth bell curve (raised cosine window) for this slider
+            # This prevents artifacts from sharp frequency cutoffs
+            for i, freq in enumerate(self.frequencies):
+                # Calculate distance from center frequency
+                distance = abs(freq - center)
+                
+                # Only affect frequencies within the width range
+                if distance <= width / 2:
+                    # Normalized distance: 0 at center, 1 at edge
+                    normalized_dist = distance / (width / 2)
+                    
+                    # Bell curve using raised cosine (smooth transition)
+                    # 1.0 at center, smoothly drops to 0 at edges
+                    bell_curve = 0.5 * (1 + np.cos(np.pi * normalized_dist))
+                    
+                    # Calculate effective gain at this frequency
+                    # Full gain at center, unity gain (no effect) at edges
+                    effective_gain = 1.0 + (gain - 1.0) * bell_curve
+                    
+                    # MULTIPLY (not assign) to combine overlapping sliders
+                    gain_array[i] *= effective_gain
+        
+        # Debug: show gain range
+        print(f"  Gain array: min = {np.min(gain_array):.3f}, max = {np.max(gain_array):.3f}")
         
         return gain_array
 

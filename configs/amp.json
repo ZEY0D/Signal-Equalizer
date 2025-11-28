@@ -1,0 +1,11 @@
+{
+  "mode": "generic",
+  "sliders": [
+    {
+      "id": 1764359207939,
+      "center_freq": 1000,
+      "width": 200,
+      "gain": 2
+    }
+  ]
+}

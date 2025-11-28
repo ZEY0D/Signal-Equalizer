@@ -165,28 +165,36 @@ export function SignalViewer({
           zoom: {
             wheel: {
               enabled: true,
-              speed: 0.1,
-              modifierKey: null, // Allow zoom without modifier key
+              speed: 0.05,
             },
             pinch: {
               enabled: true,
             },
             mode: 'x',
-            onZoom: ({ chart }) => {
+            onZoomComplete: ({ chart }) => {
               // Notify parent of zoom change for synchronization
-              if (onZoomChange && chart.scales.x) {
+              if (onZoomChange && chart.scales.x && chartData) {
                 const xScale = chart.scales.x
-                const range = xScale.max - xScale.min
-                const originalRange = xScale.options.max - xScale.options.min
-                const newZoomLevel = originalRange / range
-                onZoomChange(newZoomLevel)
+                const currentRange = xScale.max - xScale.min
+                
+                // Get original data range
+                const dataMin = Math.min(...chartData.datasets[0].data.map(d => d.x))
+                const dataMax = Math.max(...chartData.datasets[0].data.map(d => d.x))
+                const originalRange = dataMax - dataMin
+                
+                const newZoomLevel = Math.max(0.1, Math.min(10, originalRange / currentRange))
+                
+                // Only call if actually changed to avoid loops
+                if (Math.abs(lastZoomLevelRef.current - newZoomLevel) > 0.01) {
+                  lastZoomLevelRef.current = newZoomLevel
+                  onZoomChange(newZoomLevel)
+                }
               }
             },
           },
           pan: {
             enabled: true,
             mode: 'x',
-            modifierKey: null,
           },
           limits: {
             x: { min: 'original', max: 'original' },
@@ -243,7 +251,7 @@ export function SignalViewer({
   // Handle zoom synchronization
   useEffect(() => {
     const chart = chartRef.current
-    if (!chart || !chart.scales.x) return
+    if (!chart || !chart.scales.x || !chartData) return
 
     // Only update if zoomLevel actually changed (avoid infinite loops)
     if (Math.abs(lastZoomLevelRef.current - zoomLevel) < 0.01) return
@@ -254,18 +262,37 @@ export function SignalViewer({
       // Reset to original view
       chart.resetZoom()
     } else {
-      // Apply zoom level
+      // Apply zoom level by modifying scale directly
       const xScale = chart.scales.x
-      const center = (xScale.min + xScale.max) / 2
-      const originalRange = xScale.options.max - xScale.options.min
+      const currentMin = xScale.min
+      const currentMax = xScale.max
+      const center = (currentMin + currentMax) / 2
+      
+      // Get original data range
+      const dataMin = xScale.options.min || Math.min(...chartData.datasets[0].data.map(d => d.x))
+      const dataMax = xScale.options.max || Math.max(...chartData.datasets[0].data.map(d => d.x))
+      const originalRange = dataMax - dataMin
+      
       const newRange = originalRange / zoomLevel
       
-      chart.zoomScale('x', {
-        min: center - newRange / 2,
-        max: center + newRange / 2
-      }, 'none')
+      // Keep within data bounds
+      let newMin = center - newRange / 2
+      let newMax = center + newRange / 2
+      
+      if (newMin < dataMin) {
+        newMin = dataMin
+        newMax = dataMin + newRange
+      }
+      if (newMax > dataMax) {
+        newMax = dataMax
+        newMin = dataMax - newRange
+      }
+      
+      xScale.options.min = newMin
+      xScale.options.max = newMax
+      chart.update('none')
     }
-  }, [zoomLevel])
+  }, [zoomLevel, chartData])
 
   // Handle reset trigger
   useEffect(() => {

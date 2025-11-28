@@ -40,38 +40,38 @@ def next_power_of_2(n):
     return power
 
 
-def dft_slow(x):
-    """
-    Discrete Fourier Transform - Naive O(N²) implementation.
+# def dft_slow(x):
+#     """
+#     Discrete Fourier Transform - Naive O(N²) implementation.
     
-    This is the textbook implementation for educational purposes.
-    DO NOT use this for large signals - it's extremely slow!
+#     This is the textbook implementation for educational purposes.
+#     DO NOT use this for large signals - it's extremely slow!
     
-    DFT Formula: X[k] = Σ(x[n] * e^(-j*2π*k*n/N)) for n=0 to N-1
+#     DFT Formula: X[k] = Σ(x[n] * e^(-j*2π*k*n/N)) for n=0 to N-1
     
-    Args:
-        x (np.ndarray): Time-domain signal (real or complex)
+#     Args:
+#         x (np.ndarray): Time-domain signal (real or complex)
     
-    Returns:
-        np.ndarray: Frequency-domain signal (complex)
+#     Returns:
+#         np.ndarray: Frequency-domain signal (complex)
     
-    Example:
-        >>> signal = np.array([1, 2, 3, 4])
-        >>> freq = dft_slow(signal)
-    """
-    x = np.asarray(x, dtype=complex)
-    N = len(x)
+#     Example:
+#         >>> signal = np.array([1, 2, 3, 4])
+#         >>> freq = dft_slow(signal)
+#     """
+#     x = np.asarray(x, dtype=complex)
+#     N = len(x)
     
-    # Initialize output array
-    X = np.zeros(N, dtype=complex)
+#     # Initialize output array
+#     X = np.zeros(N, dtype=complex)
     
-    # Compute DFT for each frequency bin k
-    for k in range(N):
-        for n in range(N):
-            # Core DFT formula: multiply by complex exponential
-            X[k] += x[n] * np.exp(-2j * np.pi * k * n / N)
+#     # Compute DFT for each frequency bin k
+#     for k in range(N):
+#         for n in range(N):
+#             # Core DFT formula: multiply by complex exponential
+#             X[k] += x[n] * np.exp(-2j * np.pi * k * n / N)
     
-    return X
+#     return X
 
 
 def fft_cooley_tukey(x):
@@ -111,6 +111,7 @@ def fft_cooley_tukey(x):
         raise ValueError(f"Input length must be power of 2, got {N}")
     
     # Divide: split into even and odd indices
+    # here we apply the fft on the evens and the ods separetly
     even = fft_cooley_tukey(x[0::2])  # x[0], x[2], x[4], ...
     odd = fft_cooley_tukey(x[1::2])   # x[1], x[3], x[5], ...
     
@@ -583,20 +584,45 @@ def validate_spectrogram_calculation():
             break
         
         window = signal[start:end]
+        # this is just a factor for smoothing
+        # hann is a bell curve factor
+        # This makes the edges of the slice fade to zero so the math doesn't get confused by sharp cuts.
         hann = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(window_size) / window_size)
         windowed = window * hann
         
         # Use our custom FFT WITHOUT padding
+        # pad=False is critical here because window_size (256) is already a power of 2
         fft_result = fft(windowed, pad=False)
+        # We only keep the first half (positive frequencies) throw away the negative frequencies
         magnitude = np.abs(fft_result[:window_size//2 + 1])
+        # F. Add this slice to our collection
         spectrogram.append(magnitude)
     
     # Get frequency axis using our custom rfftfreq
     freqs = rfftfreq(window_size, 1/sample_rate)
+    # resolution = samplerate (1 / time between samples) / window size
     
     print(f"  Spectrogram shape: {len(spectrogram)} windows x {len(freqs)} frequencies")
     print(f"  Frequency range: {freqs[0]:.1f} Hz to {freqs[-1]:.1f} Hz")
     
+    # and now spectrogram[5, 10] tells you the loudness of the 5th frequency band at the 10th time window.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    #this is just for testing 
+
     # Analyze middle time slice
     mid_idx = len(spectrogram) // 2
     freq_response = np.array(spectrogram[mid_idx])

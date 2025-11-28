@@ -6,7 +6,15 @@ export const Slider = React.forwardRef(
     const [localValue, setLocalValue] = React.useState(value || [min])
     
     const handleChange = (e) => {
-      const newValue = [parseFloat(e.target.value)]
+      let parsedValue = parseFloat(e.target.value)
+      
+      // Round to step precision to avoid floating point issues
+      if (step < 1) {
+        const decimals = Math.max(0, -Math.floor(Math.log10(step)))
+        parsedValue = parseFloat(parsedValue.toFixed(decimals))
+      }
+      
+      const newValue = [parsedValue]
       setLocalValue(newValue)
       onValueChange?.(newValue)
     }
