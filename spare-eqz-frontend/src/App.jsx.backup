@@ -1,0 +1,455 @@
+import { useState, useRef, useEffect } from "react"
+import { 
+  Button, 
+  Card, 
+  Label, 
+  Slider, 
+  Switch, 
+  Select, 
+  SelectContent, 
+  SelectItem, 
+  SelectTrigger, 
+  SelectValue, 
+  ToggleGroup, 
+  ToggleGroupItem 
+} from "@/components"
+import { Play, Pause, Square, FileUp, ZoomIn, ZoomOut, Plus, RefreshCw, Save, Loader2 } from "lucide-react"
+import { useSignalProcessor } from "./hooks/useSignalProcessor"
+import { healthCheck } from "./services/api"
+
+export default function App() {
+  const [speed, setSpeed] = useState([1])
+  const [showSpectrograms, setShowSpectrograms] = useState(true)
+  const [equalizerMode, setEqualizerMode] = useState("generic")
+  const [backendStatus, setBackendStatus] = useState("checking")
+  const fileInputRef = useRef(null)
+
+  // Use our custom hook for signal processing
+  const {
+    sessionId,
+    isLoading,
+    error,
+    signalInfo,
+    inputSignal,
+    outputSignal,
+    fftData,
+    sliders,
+    uploadFile,
+    createSynthetic,
+    processSignal,
+    addSlider,
+    updateSlider,
+    removeSlider,
+    reset,
+  } = useSignalProcessor()
+
+  // Check backend connection on mount
+  useEffect(() => {
+    const checkBackend = async () => {
+      try {
+        await healthCheck()
+        setBackendStatus("connected")
+      } catch (error) {
+        setBackendStatus("error")
+        console.error("Backend connection failed:", error)
+      }
+    }
+    checkBackend()
+  }, [])
+
+  // Handle file upload
+  const handleFileUpload = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    try {
+      await uploadFile(file)
+    } catch (error) {
+      console.error("Upload failed:", error)
+    }
+  }
+
+  // Handle synthetic signal creation
+  const handleCreateSynthetic = async () => {
+    try {
+      await createSynthetic({
+        frequencies: [100, 500, 1000, 2000],
+        duration: 2.0,
+        sample_rate: 44100,
+      })
+    } catch (error) {
+      console.error("Failed to create synthetic signal:", error)
+    }
+  }
+
+  // Handle slider addition
+  const handleAddSlider = () => {
+    addSlider({
+      center_freq: 1000,
+      width: 200,
+      gain: 1.0,
+    })
+  }
+
+  // Handle process with debouncing
+  const handleProcess = async () => {
+    if (!sessionId || sliders.length === 0) return
+    
+    try {
+      await processSignal()
+    } catch (error) {
+      console.error("Processing failed:", error)
+    }
+  }
+
+  // Handle reset
+  const handleReset = async () => {
+    try {
+      await reset()
+    } catch (error) {
+      console.error("Reset failed:", error)
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-background text-foreground flex flex-col">
+      {/* Header */}
+      <header className="border-b border-border bg-card p-4 sticky top-0 z-50">
+        <div className="flex items-center justify-between max-w-full px-2">
+          <div className="flex items-center gap-4">
+            <h1 className="text-2xl font-bold tracking-tight">Signal Equalizer</h1>
+            {/* Backend Status Indicator */}
+            <div className="flex items-center gap-2 text-sm">
+              <div className={`w-2 h-2 rounded-full ${
+                backendStatus === "connected" ? "bg-green-500" : 
+                backendStatus === "error" ? "bg-red-500" : 
+                "bg-yellow-500 animate-pulse"
+              }`} />
+              <span className="text-muted-foreground">
+                {backendStatus === "connected" ? "Backend Connected" : 
+                 backendStatus === "error" ? "Backend Offline" : 
+                 "Checking..."}
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+            <Button 
+              className="gap-2"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isLoading}
+            >
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
+              Open File...
+            </Button>
+            <Button 
+              variant="outline"
+              onClick={handleCreateSynthetic}
+              disabled={isLoading}
+            >
+              Create Test Signal
+            </Button>
+          </div>
+        </div>
+        {/* Signal Info Bar */}
+        {signalInfo && (
+          <div className="mt-3 px-2 py-2 bg-muted/50 rounded-md text-sm text-muted-foreground flex items-center gap-4">
+            <span className="font-medium">{signalInfo.filename}</span>
+            <span>•</span>
+            <span>{signalInfo.sample_rate} Hz</span>
+            <span>•</span>
+            <span>{signalInfo.duration.toFixed(2)}s</span>
+            <span>•</span>
+            <span>{signalInfo.length.toLocaleString()} samples</span>
+            {sessionId && (
+              <>
+                <span>•</span>
+                <span className="font-mono text-xs">Session: {sessionId.slice(0, 8)}</span>
+              </>
+            )}
+          </div>
+        )}
+        {/* Error Display */}
+        {error && (
+          <div className="mt-3 px-2 py-2 bg-red-500/10 border border-red-500/20 rounded-md text-sm text-red-600">
+            Error: {error}
+          </div>
+        )}
+      </header>
+
+      {/* Main Content */}
+      <main className="flex-1 p-6 overflow-auto">
+        <div className="flex gap-6 max-w-full">
+          {/* Left Column - Main Content (~70%) */}
+          <div className="flex-[70] space-y-6 min-w-0">
+            {/* Playback & View Controls */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Playback & View Controls</h2>
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="icon" title="Play" disabled={!sessionId}>
+                    <Play className="h-4 w-4" />
+                  </Button>
+                  <Button variant="outline" size="icon" title="Pause" disabled={!sessionId}>
+                    <Pause className="h-4 w-4" />
+                  </Button>
+                  <Button variant="outline" size="icon" title="Stop" disabled={!sessionId}>
+                    <Square className="h-4 w-4" />
+                  </Button>
+                </div>
+
+                <div className="h-6 border-r border-border"></div>
+
+                <div className="flex items-center gap-3 flex-1 min-w-0">
+                  <Label htmlFor="speed" className="whitespace-nowrap text-sm">
+                    Speed
+                  </Label>
+                  <Slider
+                    id="speed"
+                    min={0.5}
+                    max={2}
+                    step={0.1}
+                    value={speed}
+                    onValueChange={setSpeed}
+                    className="flex-1"
+                    disabled={!sessionId}
+                  />
+                  <span className="text-sm text-muted-foreground w-10 text-right">{speed[0].toFixed(1)}x</span>
+                </div>
+
+                <div className="h-6 border-r border-border"></div>
+
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="icon" title="Zoom In" disabled={!sessionId}>
+                    <ZoomIn className="h-4 w-4" />
+                  </Button>
+                  <Button variant="outline" size="icon" title="Zoom Out" disabled={!sessionId}>
+                    <ZoomOut className="h-4 w-4" />
+                  </Button>
+                  <Button variant="outline" className="px-3 bg-transparent" disabled={!sessionId}>
+                    Reset View
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    className="px-3 bg-transparent gap-2"
+            {/* Input Signal */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Input Signal (Time-Domain)</h2>
+              <div className="h-56 bg-muted rounded-lg flex items-center justify-center border border-border">
+                {inputSignal ? (
+                  <div className="text-center">
+                    <p className="text-green-600 text-sm mb-2">✓ Input Signal Loaded</p>
+                    <p className="text-xs text-muted-foreground">
+                      {inputSignal.signal.length.toLocaleString()} points • {inputSignal.sample_rate} Hz
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Chart visualization coming next...
+                    </p>
+                  </div>
+                ) : (
+                  <div className="text-center">
+                    <p className="text-muted-foreground text-sm mb-2">No signal loaded</p>
+                    <p className="text-xs text-muted-foreground">Upload a file or create a test signal</p>
+                  </div>
+                )}
+              </div>
+            </Card>
+            {/* Input Signal */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Input Signal (Time-Domain)</h2>
+            {/* Output Signal */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Output Signal (Time-Domain)</h2>
+              <div className="h-56 bg-muted rounded-lg flex items-center justify-center border border-border">
+                {outputSignal ? (
+                  <div className="text-center">
+                    <p className="text-green-600 text-sm mb-2">✓ Output Signal Ready</p>
+                    <p className="text-xs text-muted-foreground">
+                      {outputSignal.signal.length.toLocaleString()} points • {outputSignal.sample_rate} Hz
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Chart visualization coming next...
+                    </p>
+                  </div>
+                ) : sessionId ? (
+                  <div className="text-center">
+                    <p className="text-muted-foreground text-sm mb-2">No processing applied yet</p>
+                    <p className="text-xs text-muted-foreground">Add sliders and click "Apply Changes"</p>
+                  </div>
+                ) : (
+                  <div className="text-center">
+                    <p className="text-muted-foreground text-sm mb-2">No signal loaded</p>
+                    <p className="text-xs text-muted-foreground">Upload a file or create a test signal</p>
+                  </div>
+                )}
+              </div>
+            </Card>lassName="p-6">
+              <h2 className="text-lg font-semibold mb-4">Input Spectrogram</h2>
+              {showSpectrograms ? (
+                <div className="h-40 bg-muted rounded-lg flex items-center justify-center border border-border">
+                  <p className="text-muted-foreground text-sm">Spectrogram Placeholder</p>
+                </div>
+              ) : (
+                <div className="h-20 bg-muted/50 rounded-lg flex items-center justify-center border border-dashed border-border">
+                  <p className="text-muted-foreground text-xs">Hidden</p>
+                </div>
+              )}
+            </Card>
+            {/* Frequency Graph */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Frequency Graph</h2>
+              <div className="h-56 bg-muted rounded-lg flex items-center justify-center border border-border mb-4">
+                {fftData ? (
+                  <div className="text-center">
+                    <p className="text-green-600 text-sm mb-2">✓ FFT Data Available</p>
+                    <p className="text-xs text-muted-foreground">
+                      {fftData.frequencies.length.toLocaleString()} frequency bins
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Frequency range: 0 - {Math.max(...fftData.frequencies).toFixed(0)} Hz
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Chart visualization coming next...
+                    </p>
+            {/* Equalizer Controls */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Equalizer Controls</h2>
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="mode" className="text-sm mb-2 block">
+                    Mode
+                  </Label>
+                  <Select value={equalizerMode} onValueChange={setEqualizerMode}>
+                    <SelectTrigger id="mode">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="generic">Generic (Dynamic Sliders)</SelectItem>
+                      <SelectItem value="instruments" disabled>Musical Instruments (Coming Soon)</SelectItem>
+                      <SelectItem value="animals" disabled>Animal Sounds (Coming Soon)</SelectItem>
+                      <SelectItem value="voices" disabled>Human Voices (Coming Soon)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Slider List */}
+                <div className="space-y-2">
+                  <Label className="text-sm">Active Sliders ({sliders.length})</Label>
+                  <div className="max-h-48 overflow-y-auto space-y-2">
+                    {sliders.length === 0 ? (
+                      <p className="text-xs text-muted-foreground text-center py-4">
+                        No sliders yet. Click "Add Slider" to start.
+                      </p>
+                    ) : (
+                      sliders.map((slider) => (
+                        <div key={slider.id} className="p-3 bg-muted/50 rounded-md text-xs space-y-1">
+                          <div className="flex justify-between items-center">
+                            <span className="font-medium">Slider #{slider.id.toString().slice(-4)}</span>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0"
+                              onClick={() => removeSlider(slider.id)}
+                            >
+                              ×
+                            </Button>
+                          </div>
+                          <div>Frequency: {slider.center_freq} Hz</div>
+                          <div>Width: {slider.width} Hz</div>
+                          <div>Gain: {slider.gain.toFixed(2)}x</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <Button 
+                  variant="outline" 
+                  className="w-full bg-transparent" 
+                  onClick={handleAddSlider}
+                  disabled={!sessionId}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Slider
+                </Button>
+
+                <Button 
+                  className="w-full gap-2"
+                  onClick={handleProcess}
+                  disabled={!sessionId || sliders.length === 0 || isLoading}
+                >
+                  {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Apply Changes
+                </Button>
+              </div>
+            </Card>
+            </Card>
+          </div>
+
+          {/* Right Column - Sidebar (~30%) */}
+          <div className="flex-[30] space-y-6 min-w-0">
+            {/* Frequency Graph */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Frequency Graph</h2>
+              <div className="h-56 bg-muted rounded-lg flex items-center justify-center border border-border mb-4">
+                <p className="text-muted-foreground text-sm">Chart Placeholder</p>
+              </div>
+              <ToggleGroup type="single" defaultValue="linear" className="w-full">
+                <ToggleGroupItem value="linear" className="flex-1">
+                  Linear
+                </ToggleGroupItem>
+                <ToggleGroupItem value="audiogram" className="flex-1">
+                  Audiogram
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </Card>
+
+            {/* Equalizer Controls */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">Equalizer Controls</h2>
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="mode" className="text-sm mb-2 block">
+                    Mode
+                  </Label>
+                  <Select value={equalizerMode} onValueChange={setEqualizerMode}>
+                    <SelectTrigger id="mode">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="generic">Generic</SelectItem>
+                      <SelectItem value="instruments">Musical Instruments</SelectItem>
+                      <SelectItem value="animals">Animal Sounds</SelectItem>
+                      <SelectItem value="voices">Human Voices</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button variant="outline" className="w-full bg-transparent" onClick={() => console.log("Add slider")}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Slider
+                </Button>
+              </div>
+            </Card>
+
+            {/* View Options */}
+            <Card className="p-6">
+              <h2 className="text-lg font-semibold mb-4">View Options</h2>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="spectrograms" className="text-sm cursor-pointer">
+                  Show/Hide Spectrograms
+                </Label>
+                <Switch id="spectrograms" checked={showSpectrograms} onCheckedChange={setShowSpectrograms} />
+              </div>
+            </Card>
+          </div>
+        </div>
+      </main>
+    </div>
+  )
+}

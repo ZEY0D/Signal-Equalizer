@@ -23,9 +23,13 @@ music-eq-frontend/node_modules/
 music-eq-frontend/dist/
 music-eq-frontend/dist-ssr/
 music-eq-frontend/*.local
-
-# Build output
 music-eq-frontend/build/
+
+spare-eqz-frontend/node_modules/
+spare-eqz-frontend/dist/
+spare-eqz-frontend/dist-ssr/
+spare-eqz-frontend/*.local
+spare-eqz-frontend/build/
 
 # =========================
 # 🚨 CRITICAL: Audio Files (These are HUGE!)
@@ -60,6 +64,9 @@ music-eq-backend/models/*/pretrained/
 music-eq-backend/models/**/*.pt
 music-eq-backend/models/**/*.pth
 
+# Entire HumanModel/asteroid library (3rd-party, hundreds of files)
+music-eq-backend/models/HumanModel/asteroid/
+
 # =========================
 # Data / Numpy files
 # =========================
@@ -72,9 +79,10 @@ music-eq-backend/models/**/*.pth
 # Spectrograms & Images
 # =========================
 music-eq-backend/outputs/spectrograms/
-*.png
-*.jpg
-*.jpeg
+# Note: We allow *.png and *.jpg for documentation/screenshots, but ignore in outputs
+music-eq-backend/outputs/**/*.png
+music-eq-backend/outputs/**/*.jpg
+music-eq-backend/outputs/**/*.jpeg
 
 # =========================
 # Environment / Secrets
@@ -90,6 +98,7 @@ config.json
 # =========================
 .vscode/
 .idea/
+*.iml
 *.swp
 *.swo
 *~
@@ -118,3 +127,17 @@ desktop.ini
 # Test outputs
 # =========================
 music-eq-backend/test_output_*.wav
+**/test_*.wav
+**/test_output*.wav
+
+# =========================
+# Temporary comparison files
+# =========================
+temp_spare_files/
+
+# =========================
+# PyCharm workspace files
+# =========================
+music-eq-backend/models/HumanModel/.idea/
+**/.idea/workspace.xml
+**/.idea/tasks.xml

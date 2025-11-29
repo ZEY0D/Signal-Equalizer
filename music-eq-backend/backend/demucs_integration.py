@@ -90,14 +90,36 @@ class DemucsIntegration:
                 check=True
             )
             print("✓ Demucs separation completed successfully")
+            print(f"   STDOUT: {result.stdout}")
+            if result.stderr:
+                print(f"   STDERR: {result.stderr}")
             
         except subprocess.CalledProcessError as e:
-            print(f"❌ Demucs failed: {e.stderr}")
-            raise RuntimeError(f"Demucs separation failed: {e.stderr}")
+            error_msg = f"Return code: {e.returncode}\n"
+            error_msg += f"STDOUT: {e.stdout}\n" if e.stdout else "STDOUT: (empty)\n"
+            error_msg += f"STDERR: {e.stderr}\n" if e.stderr else "STDERR: (empty)\n"
+            error_msg += f"Command: {' '.join(cmd)}"
+            print(f"❌ Demucs failed:\n{error_msg}")
+            raise RuntimeError(f"Demucs separation failed:\n{error_msg}")
+        except FileNotFoundError as e:
+            error_msg = f"Demucs command not found. Is demucs installed?\nCommand: {' '.join(cmd)}"
+            print(f"❌ {error_msg}")
+            raise RuntimeError(error_msg)
         
         # Locate the separated files
         filename = Path(audio_file).stem
         output_dir = os.path.join(output_folder, self.model_name, filename)
+        
+        # Debug: Print expected directory and check what actually exists
+        print(f"🔍 Looking for output in: {output_dir}")
+        parent_dir = os.path.join(output_folder, self.model_name)
+        if os.path.exists(parent_dir):
+            print(f"   Parent dir exists: {parent_dir}")
+            print(f"   Contents: {os.listdir(parent_dir)}")
+        else:
+            print(f"   ❌ Parent dir doesn't exist: {parent_dir}")
+            if os.path.exists(output_folder):
+                print(f"   Output folder contents: {os.listdir(output_folder)}")
         
         # Check if output directory exists
         if not os.path.exists(output_dir):

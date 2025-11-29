@@ -130,6 +130,58 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(CONFIG_FOLDER, exist_ok=True)
 
 
+# --- Helper Functions ---
+def compute_spectrogram_data(signal, sample_rate, window_size=1024, overlap=0.75):
+    """
+    Compute spectrogram using Short-Time Fourier Transform (STFT).
+    Shared by both PNG and JSON spectrogram endpoints.
+    
+    Args:
+        signal: Time-domain signal (1D numpy array)
+        sample_rate: Sampling rate in Hz
+        window_size: FFT window size (number of samples)
+        overlap: Overlap ratio between 0.0 and 1.0
+    
+    Returns:
+        tuple: (times, frequencies, magnitude)
+            - times: Array of time values for each window
+            - frequencies: Array of frequency bins
+            - magnitude: 2D array of magnitudes (frequencies x times)
+    """
+    hop_size = int(window_size * (1 - overlap))
+    
+    # Calculate number of windows
+    num_windows = max(1, (len(signal) - window_size) // hop_size + 1)
+    
+    # Initialize output arrays
+    frequencies = np.fft.rfftfreq(window_size, 1/sample_rate)
+    times = np.arange(num_windows) * hop_size / sample_rate
+    magnitude = np.zeros((num_windows, len(frequencies)))
+    
+    # Apply Hann window for smooth transitions
+    window = np.hanning(window_size)
+    
+    # Compute FFT for each window
+    for i in range(num_windows):
+        start_idx = i * hop_size
+        end_idx = start_idx + window_size
+        
+        if end_idx > len(signal):
+            # Pad with zeros if needed
+            segment = np.zeros(window_size)
+            available = len(signal) - start_idx
+            segment[:available] = signal[start_idx:]
+        else:
+            segment = signal[start_idx:end_idx]
+        
+        # Apply window and compute FFT
+        windowed = segment * window
+        fft_result = np.fft.rfft(windowed)
+        magnitude[i, :] = np.abs(fft_result)
+    
+    return times, frequencies, magnitude
+
+
 # --- Dependency for Session Management ---
 async def get_session(session_id: str) -> SignalProcessor:
     """FastAPI Dependency to get a valid session processor"""
@@ -257,6 +309,87 @@ async def compute_fft(session_id: str, positive_only: bool = True):
         'length': len(frequencies)
     }
 
+@app.get("/api/fft/output", response_model=FFTResponse)
+async def get_output_fft(session_id: str, positive_only: bool = True):
+    """
+    Get FFT of the OUTPUT (processed) signal.
+    """
+    processor = await get_session(session_id)
+    
+    # Check if processed signal exists
+    if processor.modified_freq_domain is None:
+        raise HTTPException(status_code=400, detail="No processed signal available. Process the signal first.")
+    
+    # Use the already computed modified frequency domain
+    frequencies = processor.frequencies
+    magnitudes = fft_magnitude(processor.modified_freq_domain)
+    phases = fft_phase(processor.modified_freq_domain)
+    
+    if positive_only:
+        positive_mask = frequencies >= 0
+        frequencies = frequencies[positive_mask]
+        magnitudes = magnitudes[positive_mask]
+        phases = phases[positive_mask]
+        
+    return {
+        'frequencies': frequencies.tolist(),
+        'magnitudes': magnitudes.tolist(),
+        'phases': phases.tolist(),
+        'length': len(frequencies)
+    }
+
+@app.get("/api/spectrogram/input")
+async def get_input_spectrogram(session_id: str, window_size: int = 1024, overlap: float = 0.75):
+    """
+    Get spectrogram data for INPUT signal (returns JSON for Generic Mode).
+    Uses the same computation as PNG spectrogram endpoint.
+    """
+    processor = await get_session(session_id)
+    
+    if processor.original_data is None:
+        raise HTTPException(status_code=400, detail="No input signal available. Upload or create a signal first.")
+    
+    # Compute spectrogram using shared function
+    times, frequencies, magnitude = compute_spectrogram_data(
+        processor.original_data, 
+        processor.sample_rate, 
+        window_size, 
+        overlap
+    )
+    
+    return {
+        'times': times.tolist(),
+        'frequencies': frequencies.tolist(),
+        'magnitude': magnitude.tolist(),  # 2D array: [time_windows][frequency_bins]
+        'sample_rate': processor.sample_rate
+    }
+
+@app.get("/api/spectrogram/output")
+async def get_output_spectrogram(session_id: str, window_size: int = 1024, overlap: float = 0.75):
+    """
+    Get spectrogram data for OUTPUT signal (returns JSON for Generic Mode).
+    Uses the same computation as PNG spectrogram endpoint.
+    """
+    processor = await get_session(session_id)
+    
+    if processor.data is None or processor.modified_freq_domain is None:
+        raise HTTPException(status_code=400, detail="No processed signal available. Process the signal first.")
+    
+    # Compute spectrogram using shared function
+    times, frequencies, magnitude = compute_spectrogram_data(
+        processor.data, 
+        processor.sample_rate, 
+        window_size, 
+        overlap
+    )
+    
+    return {
+        'times': times.tolist(),
+        'frequencies': frequencies.tolist(),
+        'magnitude': magnitude.tolist(),  # 2D array: [time_windows][frequency_bins]
+        'sample_rate': processor.sample_rate
+    }
+
 @app.post("/api/update-sliders")
 async def update_sliders(request: ProcessRequest):
     """
@@ -324,6 +457,13 @@ async def process_signal(request: ProcessRequest):
     print(f"🔊 Output Signal:")
     print(f"   Max amplitude: {np.max(np.abs(output_signal)):.4f}")
     print(f"   Length: {len(output_signal)} samples")
+    print(f"   processor.data updated: {processor.data is not None}")
+    print(f"   processor.modified_freq_domain updated: {processor.modified_freq_domain is not None}")
+    
+    # CRITICAL: Verify the signal actually changed
+    if processor.original_data is not None:
+        diff = np.sum(np.abs(output_signal - processor.original_data[:len(output_signal)]))
+        print(f"   🔍 DIFFERENCE from input: {diff:.2e} (should be >0 if processing worked)")
     print("="*60 + "\n")
     
     # Get updated spectrum (positive frequencies only)
@@ -331,70 +471,14 @@ async def process_signal(request: ProcessRequest):
     magnitudes = fft_magnitude(modified_freq_domain)
     
     positive_mask = frequencies >= 0
-
-    # Build spectrogram URLs (these endpoints will generate the images on demand)
-    ts = int(time.time())
-    # Use full backend URL so frontend (served from different origin) can fetch directly
-    backend_base = "http://localhost:8000"
-    input_spec_url = f"{backend_base}/api/spectrogram?session_id={request.session_id}&type=input&t={ts}"
-    output_spec_url = f"{backend_base}/api/spectrogram?session_id={request.session_id}&type=output&t={ts}"
     
     return {
         'message': 'Signal processed successfully',
         'output_length': len(output_signal),
         'frequencies': frequencies[positive_mask].tolist(),
         'magnitudes': magnitudes[positive_mask].tolist(),
-        'max_magnitude': float(np.max(np.abs(output_signal))),
-        'input_spectrogram_url': input_spec_url,
-        'output_spectrogram_url': output_spec_url
+        'max_magnitude': float(np.max(np.abs(output_signal)))
     }
-
-
-@app.get('/api/spectrogram')
-async def get_spectrogram(session_id: str, type: str = 'input'):
-    """
-    Generate and serve a spectrogram PNG for the requested session and type.
-    Type: 'input' or 'output'
-    """
-    processor = await get_session(session_id)
-
-    if type == 'input':
-        signal = processor.original_data
-    else:
-        signal = processor.data if processor.data is not None else processor.original_data
-
-    if signal is None:
-        raise HTTPException(status_code=404, detail='No signal available for spectrogram')
-
-    sr = processor.sample_rate
-
-    # Create output path
-    spec_dir = os.path.join(OUTPUT_FOLDER, 'spectrograms')
-    os.makedirs(spec_dir, exist_ok=True)
-    filename = f"{session_id}_{type}.png"
-    out_path = os.path.join(spec_dir, filename)
-
-    try:
-        # Plot and save spectrogram using matplotlib
-        plt.figure(figsize=(8, 4))
-        plt.specgram(signal, NFFT=1024, Fs=sr, noverlap=512, cmap='inferno')
-        plt.axis('off')
-        plt.tight_layout(pad=0)
-        plt.savefig(out_path, bbox_inches='tight', pad_inches=0)
-        plt.close()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Spectrogram generation failed: {str(e)}")
-
-    # Serve the file (disable caching so the frontend always fetches the latest)
-    return FileResponse(
-        out_path,
-        media_type='image/png',
-        headers={
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0'
-        }
-    )
 
 
 @app.get('/api/fft/compute/{signal_type}', response_model=FFTResponse)
@@ -461,12 +545,21 @@ async def get_input_signal(session_id: str, max_points: int = 10000):
 async def get_output_signal(session_id: str, max_points: int = 10000):
     """Gets the output (processed) signal waveform."""
     processor = await get_session(session_id)
-    signal = processor.data # .data holds the *current* processed signal
+    
+    # Use processed signal if available, otherwise fall back to original
+    if processor.data is not None and processor.modified_freq_domain is not None:
+        signal = processor.data
+        print(f"📤 Returning PROCESSED output signal (length: {len(signal)})")
+    else:
+        signal = processor.original_data
+        print(f"📤 Returning ORIGINAL signal as output (not yet processed)")
     
     if signal is None:
-        signal = processor.original_data
+        raise HTTPException(status_code=400, detail="No signal available")
     
-    # Downsample
+    original_length = len(signal)
+    
+    # Downsample for visualization
     if len(signal) > max_points:
         step = len(signal) // max_points
         signal = signal[::step]
@@ -479,9 +572,9 @@ async def get_output_signal(session_id: str, max_points: int = 10000):
         'signal': signal.tolist(),
         'time_axis': time_axis.tolist(),
         'sample_rate': processor.sample_rate,
-        'length': len(processor.data),
+        'length': original_length,
         'start': 0,
-        'end': len(processor.data)
+        'end': original_length
     }
 
 @app.post("/api/reset")

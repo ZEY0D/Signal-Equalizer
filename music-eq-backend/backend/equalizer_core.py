@@ -466,10 +466,15 @@ class SignalProcessor:
 
 def create_synthetic_test_signal(frequencies_hz, duration=2.0, sample_rate=44100):
     """
-    Create a synthetic test signal with multiple pure tones.
+    Create a synthetic test signal with pure tones.
     
-    This is useful for validation - you can verify that each slider
-    only affects its intended frequency.
+    For long signals (>= 10s), creates TIME-SEGMENTED pure tones:
+    - Each frequency plays in its own time segment
+    - Useful for testing frequency isolation with sliders
+    
+    For short signals (< 10s), combines all frequencies:
+    - All frequencies play simultaneously
+    - Classic multi-tone test signal
     
     Args:
         frequencies_hz (list): List of frequencies in Hz
@@ -480,25 +485,52 @@ def create_synthetic_test_signal(frequencies_hz, duration=2.0, sample_rate=44100
         tuple: (signal, sample_rate)
     
     Example:
-        >>> # Create test signal with 4 pure tones
-        >>> signal, sr = create_synthetic_test_signal([100, 500, 1000, 2000])
-        >>> processor = SignalProcessor()
-        >>> processor.set_signal(signal, sr)
+        >>> # 20s segmented signal: 0-4s=100Hz, 4-8s=500Hz, etc.
+        >>> signal, sr = create_synthetic_test_signal([100, 500, 1000, 2000, 4000], duration=20.0)
+        >>> # 2s combined signal: all frequencies at once
+        >>> signal, sr = create_synthetic_test_signal([100, 500, 1000], duration=2.0)
     """
-    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
-    signal = np.zeros_like(t)
+    num_samples = int(sample_rate * duration)
+    t = np.linspace(0, duration, num_samples, endpoint=False)
+    signal = np.zeros(num_samples)
     
-    # Add each frequency component
-    for freq in frequencies_hz:
-        signal += np.sin(2 * np.pi * freq * t)
+    if duration >= 10.0 and len(frequencies_hz) > 0:
+        # TIME-SEGMENTED MODE: Each frequency in its own time segment
+        segment_duration = duration / len(frequencies_hz)
+        samples_per_segment = int(sample_rate * segment_duration)
+        
+        print(f"✓ Creating TIME-SEGMENTED synthetic signal:")
+        print(f"  - Total Duration: {duration:.1f} s")
+        print(f"  - Segment Duration: {segment_duration:.1f} s each")
+        print(f"  - Frequencies: {frequencies_hz} Hz")
+        print(f"  - Sample Rate: {sample_rate} Hz")
+        print(f"\n  Time Segments:")
+        
+        for i, freq in enumerate(frequencies_hz):
+            start_sample = i * samples_per_segment
+            end_sample = min((i + 1) * samples_per_segment, num_samples)
+            start_time = i * segment_duration
+            end_time = min((i + 1) * segment_duration, duration)
+            
+            # Create time array for this segment
+            segment_t = t[start_sample:end_sample]
+            
+            # Generate pure tone for this segment
+            signal[start_sample:end_sample] = np.sin(2 * np.pi * freq * segment_t)
+            
+            print(f"    {start_time:.1f}s - {end_time:.1f}s: {freq} Hz")
+    else:
+        # COMBINED MODE: All frequencies at once (classic multi-tone)
+        print(f"✓ Creating COMBINED synthetic signal:")
+        print(f"  - Frequencies: {frequencies_hz} Hz (all combined)")
+        print(f"  - Duration: {duration:.1f} s")
+        print(f"  - Sample Rate: {sample_rate} Hz")
+        
+        for freq in frequencies_hz:
+            signal += np.sin(2 * np.pi * freq * t)
     
-    # Normalize
+    # Normalize to prevent clipping
     signal = normalize_signal(signal)
-    
-    print(f"✓ Created synthetic signal:")
-    print(f"  - Frequencies: {frequencies_hz} Hz")
-    print(f"  - Duration: {duration} s")
-    print(f"  - Sample Rate: {sample_rate} Hz")
     
     return signal, sample_rate
 

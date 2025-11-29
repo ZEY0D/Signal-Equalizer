@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
+import GenericMode from "./components/GenericMode";
+import Spectrogram from "./components-generic/Spectrogram";
+import { FrequencyGraph } from "./components-generic/FrequencyGraph";
 
 // ===============================================
 // API Services (Integrated from src/api.js)
@@ -390,349 +393,6 @@ const CinePlayer = ({ data, audioSrc, type, viewWindow, onViewChange, audioRef }
 };
 
 // ===============================================
-// Component: FrequencyChart (FFT Viewer)
-// ===============================================
-const FrequencyChart = ({ data, type }) => {
-    const canvasRef = useRef(null);
-    const [currentScale, setCurrentScale] = useState('linear'); 
-    
-    const hasData = data && data.length > 0;
-
-    const drawChart = useCallback((canvas, data, scale) => {
-        const ctx = canvas.getContext('2d');
-        const width = canvas.width;
-        const height = canvas.height;
-        ctx.clearRect(0, 0, width, height);
-        
-        if (!hasData) {
-            ctx.fillStyle = '#666';
-            ctx.font = '16px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText(`No ${type} FFT Data Loaded`, width / 2, height / 2);
-            return;
-        }
-
-        // ===== AUDIOGRAM SCALE SETUP =====
-        // Audiogram uses logarithmic frequency scale (20Hz to 20kHz)
-        // Why? Human hearing is logarithmic - we perceive octaves (doubling of frequency) equally
-        // Example: 100Hz to 200Hz sounds the same "distance" as 1000Hz to 2000Hz
-        const minFreq = 20;      // Lowest frequency humans can hear
-        const maxFreq = 20000;   // Highest frequency humans can hear (20kHz)
-        const logMinFreq = Math.log10(minFreq);  // log10(20) = 1.301
-        const logMaxFreq = Math.log10(maxFreq);  // log10(20000) = 4.301
-        
-        // ===== AUDIOGRAM Y-AXIS (dB SCALE, INVERTED) =====
-        // In audiograms, Y-axis shows "Hearing Level" in decibels (dB HL)
-        // INVERTED: 0 dB at TOP = normal/good hearing
-        //          120 dB at BOTTOM = severe hearing loss
-        // This matches medical audiogram convention used by audiologists
-        const minDB = -10;   // Top of chart (better than normal hearing)
-        const maxDB = 120;   // Bottom of chart (profound hearing loss)
-        const dbRange = maxDB - minDB;  // Total range = 130 dB
-        
-        // Find the maximum magnitude in our data for normalization
-        let maxDataValue = 0;
-        if (hasData) {
-            maxDataValue = data.reduce((max, val) => Math.max(max, val), 0);
-        }
-        
-        const dataLength = data.length;
-        
-        // ===== MARGINS FOR AUDIOGRAM GRID =====
-        // We need margins to fit the axis labels and grid
-        const marginLeft = 40;    // Space for Y-axis labels (dB values)
-        const marginRight = 10;
-        const marginTop = 30;     // Space for title
-        const marginBottom = 30;  // Space for X-axis labels (frequencies)
-        const plotWidth = width - marginLeft - marginRight;
-        const plotHeight = height - marginTop - marginBottom;
-        
-        // ===== DRAW AUDIOGRAM GRID (only in audiogram mode) =====
-        if (scale === 'audiogram') {
-            ctx.strokeStyle = '#333';
-            ctx.fillStyle = '#888';
-            ctx.font = '10px sans-serif';
-            ctx.textAlign = 'right';
-            ctx.lineWidth = 0.5;
-            
-            // Draw horizontal grid lines every 10 dB
-            // These help read the hearing level at any point on the graph
-            const dbSteps = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
-            dbSteps.forEach(db => {
-                // Calculate Y position for this dB level
-                // (db - minDB) / dbRange gives us a value from 0 to 1
-                // Multiply by plotHeight to get pixel position
-                const yPos = marginTop + ((db - minDB) / dbRange) * plotHeight;
-                
-                // Draw the dB label on the left
-                ctx.fillText(`${db} dB`, marginLeft - 5, yPos + 3);
-                
-                // Draw horizontal grid line
-                ctx.beginPath();
-                ctx.moveTo(marginLeft, yPos);
-                ctx.lineTo(marginLeft + plotWidth, yPos);
-                ctx.stroke();
-            });
-            
-            // Draw Y-axis label (rotated 90 degrees)
-            ctx.save();
-            ctx.translate(15, height / 2);
-            ctx.rotate(-Math.PI / 2);  // Rotate counter-clockwise
-            ctx.textAlign = 'center';
-            ctx.fillStyle = '#ccc';
-            ctx.font = 'bold 12px sans-serif';
-            ctx.fillText('Hearing Level (dB HL)', 0, 0);
-            ctx.restore();
-        }
-
-        // Set line color based on input/output
-        ctx.strokeStyle = type === 'input' ? '#4A90E2' : '#F5A623';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        
-        let started = false;
-        
-        // ===== MAIN LOOP: DRAW THE SPECTRUM LINE =====
-        for (let i = 0; i < dataLength; i++) {
-            let x, y;
-            
-            if (scale === 'audiogram') {
-                // ===== AUDIOGRAM MODE =====
-                
-                // STEP 1: Calculate the frequency for this data point
-                // Assumption: data[i] represents frequency bin i
-                // FFT divides the signal from 0 Hz to Nyquist frequency (half of sample rate)
-                // For typical audio at 44100 Hz sample rate, Nyquist = 22050 Hz
-                const freq = (i / dataLength) * 22050;
-                
-                // Skip frequencies below 20 Hz (below human hearing range)
-                if (freq < minFreq) {
-                    continue;
-                }
-                
-                // STEP 2: X-axis position (LOGARITHMIC)
-                // Clamp frequency to our range (20 Hz to 20 kHz)
-                const clampedFreq = Math.min(Math.max(freq, minFreq), maxFreq);
-                
-                // Convert to logarithmic scale
-                const logFreq = Math.log10(clampedFreq);
-                
-                // Normalize to 0-1 range
-                // Example: 100 Hz → log10(100)=2 → (2-1.301)/(4.301-1.301) = 0.233
-                //         1000 Hz → log10(1000)=3 → (3-1.301)/(4.301-1.301) = 0.566
-                // Notice: 1000Hz (10x higher) is NOT 10x further, but roughly 2.4x
-                const normalizedLogPos = (logFreq - logMinFreq) / (logMaxFreq - logMinFreq);
-                x = marginLeft + normalizedLogPos * plotWidth;
-                
-                // STEP 3: Y-axis position (dB, INVERTED)
-                // Convert magnitude to decibels: dB = 20 * log10(magnitude)
-                // Why 20? Because power is proportional to magnitude squared, and 10*log10(mag²) = 20*log10(mag)
-                const magnitudeDB = data[i] > 0 ? 20 * Math.log10(data[i]) : -100;
-                
-                // Normalize the dB value relative to our maximum
-                const maxMagnitudeDB = maxDataValue > 0 ? 20 * Math.log10(maxDataValue) : 0;
-                
-                // Invert: subtract from max so louder sounds appear at top (less hearing loss)
-                const normalizedDB = maxMagnitudeDB - magnitudeDB;
-                
-                // Clamp to our dB range (-10 to 120)
-                const clampedDB = Math.min(Math.max(normalizedDB, minDB), maxDB);
-                
-                // Convert to Y position (0 dB at top, 120 dB at bottom)
-                const dbPos = (clampedDB - minDB) / dbRange;  // 0 to 1
-                y = marginTop + dbPos * plotHeight;  // Top to bottom
-                
-            } else {
-                // ===== LINEAR MODE (Standard FFT visualization) =====
-                
-                // STEP 1: X-axis position (LINEAR)
-                // Simply divide the width equally among all frequency bins
-                // Bin 0 → x=0, Bin dataLength → x=width
-                x = (i / dataLength) * width;
-                
-                // STEP 2: Y-axis position (LINEAR MAGNITUDE)
-                // Normalize magnitude to 0-1 range
-                let normalizedMag = data[i] / (maxDataValue || 1);
-                
-                // Convert to pixel position (bottom to top)
-                // Higher magnitude → higher on screen
-                // We use 80% of height to leave some margin at top
-                y = height - (normalizedMag * height * 0.8); 
-            }
-            
-            // Draw the line
-            if (!started) {
-                if (scale === 'audiogram') {
-                    ctx.moveTo(x, y);  // Start at first valid point
-                } else {
-                    ctx.moveTo(x, height);  // Start from bottom for filled area
-                }
-                started = true;
-            }
-            ctx.lineTo(x, y);
-        }
-        
-        if (scale === 'audiogram') {
-            // Audiogram: just draw the line (no fill)
-            ctx.stroke();
-        } else {
-            // Linear: fill the area under the curve
-            ctx.lineTo(width, height);  // Line to bottom-right
-            ctx.closePath();
-            ctx.fillStyle = type === 'input' ? 'rgba(74, 144, 226, 0.4)' : 'rgba(245, 166, 35, 0.4)'; 
-            ctx.fill();
-            ctx.stroke();
-        }
-
-        // ===== DRAW FREQUENCY LABELS (X-AXIS) for audiogram =====
-        if (scale === 'audiogram') {
-            ctx.fillStyle = '#888';
-            ctx.font = '10px sans-serif';
-            ctx.textAlign = 'center';
-            
-            // Standard audiogram frequencies (used in hearing tests)
-            // These are spread logarithmically across the hearing range
-            const freqLabels = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
-            freqLabels.forEach(freq => {
-                // Calculate X position using same logarithmic formula
-                const logFreq = Math.log10(freq);
-                const normalizedLogPos = (logFreq - logMinFreq) / (logMaxFreq - logMinFreq);
-                const x = marginLeft + normalizedLogPos * plotWidth;
-                
-                // Format label (use 'k' for thousands)
-                ctx.fillText(freq >= 1000 ? `${freq/1000}k` : freq, x, height - 10);
-            });
-            
-            // X-axis label
-            ctx.fillStyle = '#ccc';
-            ctx.font = 'bold 12px sans-serif';
-            ctx.fillText('Frequency (Hz)', width / 2, height - marginBottom + 25);
-        }
-
-        // ===== TITLE LABEL =====
-        ctx.fillStyle = '#ccc';
-        ctx.font = '14px sans-serif';
-        ctx.textAlign = 'left';
-        ctx.fillText(`${type.toUpperCase()} Spectrum - ${scale === 'audiogram' ? 'Audiogram (Log)' : 'Linear'}`, 10, 20);
-
-    }, [type, hasData]);
-
-    useEffect(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        
-        const rect = canvas.parentNode.getBoundingClientRect();
-        canvas.width = rect.width;
-        canvas.height = rect.height - 30;
-        drawChart(canvas, data, currentScale);
-    }, [data, currentScale, drawChart]);
-    
-    const containerStyle = {
-        flexGrow: 1, 
-        minHeight: '250px', 
-        position: 'relative',
-        display: 'flex',
-        flexDirection: 'column',
-    };
-
-    const canvasStyle = {
-        width: '100%',
-        height: '100%',
-        display: 'block'
-    };
-    
-    const buttonStyle = {
-        position: 'absolute',
-        top: '10px',
-        right: '10px',
-        padding: '5px 10px',
-        borderRadius: '4px',
-        backgroundColor: '#555',
-        color: 'white',
-        border: 'none',
-        cursor: 'pointer',
-        fontSize: '0.8rem',
-        zIndex: 10
-    };
-
-    return (
-        <div style={containerStyle}>
-            <canvas ref={canvasRef} style={canvasStyle} />
-            <button 
-                style={buttonStyle} 
-                onClick={() => setCurrentScale(prev => prev === 'linear' ? 'audiogram' : 'linear')}
-            >
-                Scale: {currentScale === 'linear' ? 'Linear' : 'Audiogram'}
-            </button>
-        </div>
-    );
-};
-
-// ===============================================
-// Component: Spectrogram (Image Viewer)
-// ===============================================
-const Spectrogram = ({ imageSrc, type }) => {
-    const style = {
-        flexGrow: 1,
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: '#333',
-        borderRadius: '4px',
-        overflow: 'hidden',
-        minHeight: '250px',
-        position: 'relative'
-    };
-    
-    const imgStyle = {
-        width: '100%',
-        height: '100%',
-        objectFit: 'cover' 
-    };
-    
-    const fallbackStyle = {
-        color: '#999',
-        fontSize: '1rem',
-        zIndex: 5
-    };
-
-    const typeLabelStyle = {
-        position: 'absolute',
-        top: '10px',
-        left: '10px',
-        color: type === 'input' ? '#4A90E2' : '#F5A623',
-        backgroundColor: 'rgba(30, 30, 30, 0.7)',
-        padding: '3px 8px',
-        borderRadius: '4px',
-        fontSize: '0.8rem',
-        zIndex: 10
-    }
-
-    // Use a key change to force image refresh when URL changes, addressing cache issues
-    const key = imageSrc; 
-
-    return (
-        <div style={style}>
-            <div style={typeLabelStyle}>{type.toUpperCase()} Spectrogram</div>
-            {imageSrc ? (
-                <img 
-                    src={imageSrc} 
-                    alt={`Spectrogram of the ${type} signal`} 
-                    style={imgStyle}
-                    key={key} 
-                    onError={(e) => {
-                        e.target.style.display = 'none'; // Hide broken image icon
-                        console.error(`Failed to load ${type} spectrogram image: ${imageSrc}`);
-                    }}
-                />
-            ) : (
-                <p style={fallbackStyle}>Spectrogram Image Not Available</p>
-            )}
-        </div>
-    );
-};
-
-// ===============================================
 // Component: EqualizerSliders (Gain Sliders)
 // ===============================================
 const EqualizerSliders = ({ labels, onChange, disabled }) => {
@@ -992,6 +652,9 @@ const styles = {
 };
 
 export default function App() {
+    // UI Mode: "customized" or "generic"
+    const [uiMode, setUiMode] = useState("customized");
+    
     const [sessionId, setSessionId] = useState(null);
     const [loading, setLoading] = useState(false);
     const [processing, setProcessing] = useState(false);
@@ -1001,8 +664,9 @@ export default function App() {
     const [outputWaveform, setOutputWaveform] = useState([]);
     const [inputFftData, setInputFftData] = useState([]);
     const [outputFftData, setOutputFftData] = useState([]);
-    const [inputSpectrogramImg, setInputSpectrogramImg] = useState("");
-    const [outputSpectrogramImg, setOutputSpectrogramImg] = useState("");
+    const [inputSpectrogramData, setInputSpectrogramData] = useState(null);
+    const [outputSpectrogramData, setOutputSpectrogramData] = useState(null);
+    const [frequencyScale, setFrequencyScale] = useState("linear"); // For FFT visualization
     
     // Linked view state for CinePlayers (0 to 1 range, normalized)
     const [viewWindow, setViewWindow] = useState({ xMin: 0, xMax: 1 });
@@ -1069,8 +733,8 @@ export default function App() {
         if (!id) return;
         setProcessing(true);
         try {
-            // 1. Send the config to the backend and get back spectrogram URLs
-            const { inputSpectrogram, outputSpectrogram } = await processSignal(id, config);
+            // 1. Send the config to the backend
+            await processSignal(id, config);
             
             // 2. Update all resource URLs immediately to force reload
             const newInputUrl = getAudioUrl(id, "input");
@@ -1078,9 +742,21 @@ export default function App() {
             
             setAudioUrlInput(newInputUrl);
             setAudioUrlOutput(newOutputUrl);
+
+            // 2.5 Fetch spectrogram data
+            try {
+                const inputSpec = await axios.get(`${API_BASE_URL}/spectrogram/input?session_id=${id}`);
+                setInputSpectrogramData(inputSpec.data);
+            } catch (err) {
+                console.warn('Could not fetch input spectrogram:', err);
+            }
             
-            setInputSpectrogramImg(inputSpectrogram);
-            setOutputSpectrogramImg(outputSpectrogram);
+            try {
+                const outputSpec = await axios.get(`${API_BASE_URL}/spectrogram/output?session_id=${id}`);
+                setOutputSpectrogramData(outputSpec.data);
+            } catch (err) {
+                console.warn('Could not fetch output spectrogram:', err);
+            }
 
             // 3. Fetch updated Waveform and FFT data (Output only for efficiency after re-processing)
             await fetchData(id, 'output_only'); 
@@ -1228,8 +904,8 @@ export default function App() {
         setOutputWaveform([]);
         setInputFftData([]);
         setOutputFftData([]);
-        setInputSpectrogramImg('');
-        setOutputSpectrogramImg('');
+        setInputSpectrogramData(null);
+        setOutputSpectrogramData(null);
         setDemucsStemUrls(null);
         setDemucsError('');
         setHumanSourceUrls(null);
@@ -1267,7 +943,7 @@ export default function App() {
             console.log("🎛️ Applying changes and processing signal...");
             
             // Run the heavy processing (FFT→Gain→IFFT)
-            const { inputSpectrogram, outputSpectrogram } = await processSignal(sessionId, slidersConfig);
+            await processSignal(sessionId, slidersConfig);
             
             // Update audio URLs to force reload
             const newInputUrl = getAudioUrl(sessionId, "input");
@@ -1276,8 +952,20 @@ export default function App() {
             setAudioUrlInput(newInputUrl);
             setAudioUrlOutput(newOutputUrl);
             
-            setInputSpectrogramImg(inputSpectrogram);
-            setOutputSpectrogramImg(outputSpectrogram);
+            // Fetch spectrogram data
+            try {
+                const inputSpec = await axios.get(`${API_BASE_URL}/spectrogram/input?session_id=${sessionId}`);
+                setInputSpectrogramData(inputSpec.data);
+            } catch (err) {
+                console.warn('Could not fetch input spectrogram:', err);
+            }
+            
+            try {
+                const outputSpec = await axios.get(`${API_BASE_URL}/spectrogram/output?session_id=${sessionId}`);
+                setOutputSpectrogramData(outputSpec.data);
+            } catch (err) {
+                console.warn('Could not fetch output spectrogram:', err);
+            }
 
             // Fetch updated waveform and FFT data
             await fetchData(sessionId, 'output_only');
@@ -1303,14 +991,69 @@ export default function App() {
     }, []);
 
     return (
-        <div style={styles.container}>
-            <div style={styles.header}>
-                <h1 className="text-2xl font-bold">Signal Equalizer</h1>
+        <div>
+            {/* UI Mode Switcher - Top of everything */}
+            <div style={{
+                backgroundColor: '#0a0a0a',
+                padding: '15px 20px',
+                borderBottom: '2px solid #333',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                position: 'sticky',
+                top: 0,
+                zIndex: 1000
+            }}>
+                <div style={{display: 'flex', alignItems: 'center', gap: '15px'}}>
+                    <h2 style={{margin: 0, color: '#fff', fontSize: '1.1rem'}}>UI Mode:</h2>
+                    <div style={{display: 'flex', gap: '10px'}}>
+                        <button
+                            onClick={() => setUiMode('customized')}
+                            style={{
+                                padding: '10px 20px',
+                                backgroundColor: uiMode === 'customized' ? '#4A90E2' : '#2a2a2a',
+                                color: '#fff',
+                                border: uiMode === 'customized' ? '2px solid #4A90E2' : '2px solid #555',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontWeight: uiMode === 'customized' ? 'bold' : 'normal',
+                                transition: 'all 0.2s'
+                            }}
+                        >
+                            🎵 Customized Mode
+                        </button>
+                        <button
+                            onClick={() => setUiMode('generic')}
+                            style={{
+                                padding: '10px 20px',
+                                backgroundColor: uiMode === 'generic' ? '#00ff88' : '#2a2a2a',
+                                color: uiMode === 'generic' ? '#000' : '#fff',
+                                border: uiMode === 'generic' ? '2px solid #00ff88' : '2px solid #555',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontWeight: uiMode === 'generic' ? 'bold' : 'normal',
+                                transition: 'all 0.2s'
+                            }}
+                        >
+                            🎛️ Generic Mode
+                        </button>
+                    </div>
+                </div>
+                <div style={{color: '#999', fontSize: '0.85rem'}}>
+                    {uiMode === 'customized' ? '(Music/Animals/Human + AI Separation)' : '(Custom Sliders + Chart.js)'}
+                </div>
+            </div>
+
+            {/* Conditional Rendering based on UI Mode */}
+            {uiMode === 'customized' ? (
+                <div style={styles.container}>
+                    <div style={styles.header}>
+                        <h1 className="text-2xl font-bold">Signal Equalizer</h1>
                 
-                {/* Mode Selector */}
-                <select 
-                    onChange={(e) => handleChangeMode(sessionId, e.target.value)} 
-                    style={styles.select}
+                        {/* Mode Selector */}
+                        <select 
+                            onChange={(e) => handleChangeMode(sessionId, e.target.value)} 
+                            style={styles.select}
                     value={currentMode} 
                 >
                     <option value="music">Musical Instruments Mode</option>
@@ -1468,13 +1211,56 @@ export default function App() {
                 </div>
 
                 <div style={styles.card}>
-                    <h3>Frequency Domain (Input)</h3>
-                    <FrequencyChart data={inputFftData} type="input" />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                        <h3>Frequency Domain (Input)</h3>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button 
+                                onClick={() => setFrequencyScale('linear')}
+                                style={{
+                                    padding: '6px 12px',
+                                    backgroundColor: frequencyScale === 'linear' ? 'rgb(34, 197, 94)' : '#333',
+                                    color: frequencyScale === 'linear' ? '#fff' : '#999',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '12px'
+                                }}
+                            >
+                                Linear
+                            </button>
+                            <button 
+                                onClick={() => setFrequencyScale('audiogram')}
+                                style={{
+                                    padding: '6px 12px',
+                                    backgroundColor: frequencyScale === 'audiogram' ? 'rgb(34, 197, 94)' : '#333',
+                                    color: frequencyScale === 'audiogram' ? '#fff' : '#999',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '12px'
+                                }}
+                            >
+                                Audiogram
+                            </button>
+                        </div>
+                    </div>
+                    <FrequencyGraph 
+                        fftData={inputFftData ? { frequencies: inputFftData.map((_, i) => i * 22050 / inputFftData.length), magnitudes: inputFftData } : null}
+                        scale={frequencyScale}
+                        title="Input Frequency Spectrum"
+                        maxFrequency={22050}
+                        height={300}
+                    />
                 </div>
 
                 <div style={styles.card}>
                     <h3>Spectrogram (Input)</h3>
-                    <Spectrogram imageSrc={inputSpectrogramImg} type="input" />
+                    <Spectrogram 
+                        spectrogramData={inputSpectrogramData} 
+                        title="Input Signal Spectrogram" 
+                        height={300}
+                        maxFreq={5000}
+                    />
                 </div>
             </div>
 
@@ -1496,12 +1282,53 @@ export default function App() {
 
                 <div style={styles.card}>
                     <h3>Frequency Domain (Output)</h3>
-                    <FrequencyChart data={outputFftData} type="output" />
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                        <button 
+                            onClick={() => setFrequencyScale('linear')}
+                            style={{
+                                padding: '6px 12px',
+                                backgroundColor: frequencyScale === 'linear' ? 'rgb(34, 197, 94)' : '#333',
+                                color: frequencyScale === 'linear' ? '#fff' : '#999',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '12px'
+                            }}
+                        >
+                            Linear
+                        </button>
+                        <button 
+                            onClick={() => setFrequencyScale('audiogram')}
+                            style={{
+                                padding: '6px 12px',
+                                backgroundColor: frequencyScale === 'audiogram' ? 'rgb(34, 197, 94)' : '#333',
+                                color: frequencyScale === 'audiogram' ? '#fff' : '#999',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '12px'
+                            }}
+                        >
+                            Audiogram
+                        </button>
+                    </div>
+                    <FrequencyGraph 
+                        fftData={outputFftData ? { frequencies: outputFftData.map((_, i) => i * 22050 / outputFftData.length), magnitudes: outputFftData } : null}
+                        scale={frequencyScale}
+                        title="Output Frequency Spectrum"
+                        maxFrequency={22050}
+                        height={300}
+                    />
                 </div>
 
                 <div style={styles.card}>
                     <h3>Spectrogram (Output)</h3>
-                    <Spectrogram imageSrc={outputSpectrogramImg} type="output" />
+                    <Spectrogram 
+                        spectrogramData={outputSpectrogramData} 
+                        title="Output Signal Spectrogram" 
+                        height={300}
+                        maxFreq={5000}
+                    />
                 </div>
             </div>
 
@@ -1656,10 +1483,13 @@ export default function App() {
                     </div>
                 </>
             )}
-            
-            {/* Hidden Input Audio Element (for consistency, uses same session ID) */}
-            <audio ref={audioRefInput} key={audioUrlInput} src={audioUrlInput} preload="none" style={{display: 'none'}} />
-            
+                    
+                    {/* Hidden Input Audio Element (for consistency, uses same session ID) */}
+                    <audio ref={audioRefInput} key={audioUrlInput} src={audioUrlInput} preload="none" style={{display: 'none'}} />
+                </div>
+            ) : (
+                <GenericMode />
+            )}
         </div>
     );
 }
