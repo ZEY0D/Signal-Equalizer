@@ -196,7 +196,7 @@ export function useSignalProcessor() {
 
   /**
    * Update existing slider
-   * Returns the updated slider array synchronously
+   * Returns the updated sliders array for immediate use
    */
   const updateSlider = useCallback((id, updates) => {
     let updatedSliders;

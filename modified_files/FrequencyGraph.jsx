@@ -22,7 +22,7 @@ import {
   Legend,
   Filler
 } from 'chart.js'
-import { Card } from './ui'
+import { Card } from '@/components'
 
 // Register Chart.js components
 ChartJS.register(
@@ -70,40 +70,19 @@ export function FrequencyGraph({
       sampledMagnitudes.push(magnitudes[i])
     }
 
-    // Convert magnitudes to dB if in audiogram mode
-    const isAudiogramMode = scale === 'audiogram'
-    
-    // Find max magnitude for normalization
-    const maxMag = Math.max(...sampledMagnitudes.filter(m => m > 0))
-    
-    const processedMagnitudes = isAudiogramMode 
-      ? sampledMagnitudes.map(mag => {
-          if (mag <= 0) return 120 // Silence = worst hearing (bottom)
-          
-          // Convert to dB and normalize to 0-120 range
-          // Max magnitude -> 0 dB (top, best hearing)
-          // Min magnitude -> 120 dB (bottom, worst hearing)
-          const dbFromMax = 20 * Math.log10(mag / maxMag)
-          const normalizedDB = -dbFromMax // Invert: louder = lower dB value
-          
-          // Clamp to 0-120 dB range
-          return Math.max(0, Math.min(120, normalizedDB))
-        })
-      : sampledMagnitudes
-
     // Create chart data with x,y coordinates for proper scaling
     const data = {
       datasets: [
         {
-          label: isAudiogramMode ? 'Hearing Level (dB)' : 'Magnitude',
+          label: 'Magnitude',
           data: sampledFrequencies.map((freq, i) => ({
             x: freq,
-            y: processedMagnitudes[i]
+            y: sampledMagnitudes[i]
           })),
           borderColor: 'rgb(59, 130, 246)',
           backgroundColor: 'rgba(59, 130, 246, 0.1)',
           borderWidth: 2,
-          fill: !isAudiogramMode, // Only fill in linear mode
+          fill: true,
           tension: 0.1,
           pointRadius: 0,
           pointHoverRadius: 4,
@@ -183,43 +162,12 @@ export function FrequencyGraph({
               return `${freq.toFixed(1)} Hz`
             },
             label: (context) => {
-              const yValue = context.parsed.y
-              if (scale === 'audiogram') {
-                return `${context.dataset.label}: ${yValue.toFixed(1)} dB`
-              }
-              return `${context.dataset.label}: ${yValue.toFixed(4)}`
+              return `${context.dataset.label}: ${context.parsed.y.toFixed(4)}`
             },
           },
         },
       },
       scales: {
-        y: {
-          type: 'linear',
-          display: true,
-          title: {
-            display: true,
-            text: isLogarithmic ? 'Hearing Level (dB HL)' : 'Magnitude',
-            color: 'rgb(156, 163, 175)',
-            font: { size: 12 },
-          },
-          reverse: isLogarithmic, // Reverse Y-axis for audiogram: 0 at top, 120 at bottom
-          min: isLogarithmic ? 0 : undefined,   // Start at 0 dB (top)
-          max: isLogarithmic ? 120 : undefined, // End at 120 dB (bottom)
-          ticks: {
-            color: 'rgb(156, 163, 175)',
-            stepSize: isLogarithmic ? 10 : undefined, // Grid lines every 10 dB
-            callback: function(value) {
-              if (isLogarithmic) {
-                return value + ' dB'
-              }
-              return value.toFixed(2)
-            }
-          },
-          grid: {
-            color: 'rgba(156, 163, 175, 0.1)',
-          },
-          beginAtZero: true,
-        },
         x: {
           type: isLogarithmic ? 'logarithmic' : 'linear',
           display: true,
@@ -229,39 +177,52 @@ export function FrequencyGraph({
             color: 'rgb(156, 163, 175)',
             font: { size: 12 },
           },
-          min: isLogarithmic ? 20 : 0,
-          max: isLogarithmic ? 20000 : 5000,
+          min: 0,
+          max: 5000, // Show up to 5 kHz for clarity
           ticks: {
             color: 'rgb(156, 163, 175)',
-            callback: function(value) {
+            callback: function(value, index, ticks) {
               if (isLogarithmic) {
-                // Standard audiogram frequencies
-                const freq = value
-                const standardFreqs = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-                // Only show labels for standard frequencies
-                if (standardFreqs.some(f => Math.abs(f - freq) < freq * 0.1)) {
+                // Show specific frequency points for logarithmic scale
+                const freq = parseFloat(this.getLabelForValue(value))
+                if ([20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].includes(Math.round(freq))) {
                   return freq >= 1000 ? `${freq/1000}k` : freq.toString()
                 }
                 return ''
               }
+              // Linear scale - show cleaner labels
               const freq = value
               if (freq >= 1000) {
                 return `${(freq/1000).toFixed(1)}k`
               }
               return freq.toFixed(0)
             },
-            autoSkip: false,
-            maxTicksLimit: isLogarithmic ? 20 : 8,
+            autoSkip: true,
+            maxTicksLimit: isLogarithmic ? 15 : 8,
           },
-          afterBuildTicks: isLogarithmic ? function(axis) {
-            // Force specific ticks for audiogram
-            axis.ticks = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].map(value => ({
-              value: value
-            }))
-          } : undefined,
           grid: {
             color: 'rgba(156, 163, 175, 0.1)',
           },
+        },
+        y: {
+          type: 'linear',
+          display: true,
+          title: {
+            display: true,
+            text: 'Magnitude',
+            color: 'rgb(156, 163, 175)',
+            font: { size: 12 },
+          },
+          ticks: {
+            color: 'rgb(156, 163, 175)',
+            callback: function(value) {
+              return value.toFixed(2)
+            }
+          },
+          grid: {
+            color: 'rgba(156, 163, 175, 0.1)',
+          },
+          beginAtZero: scale === 'linear',
         },
       },
       animation: {
@@ -277,35 +238,24 @@ export function FrequencyGraph({
   const createSliderOverlay = (slider, frequencies, baseMagnitudes) => {
     const { center_freq, width, gain } = slider
     
-    // Determine effective range (matches backend logic)
-    let effectiveRange
-    if (gain < 0.1) {
-      // MUTE: use 5x width for complete frequency elimination
-      effectiveRange = (width / 2) * 5.0
-    } else if (gain < 0.3 || gain > 1.7) {
-      // Other extreme gains: use 3x width
-      effectiveRange = (width / 2) * 3.0
-    } else {
-      // Moderate gain: use standard width
-      effectiveRange = width / 2
-    }
-    
     return frequencies.map((freq, i) => {
       // Calculate distance from center frequency
       const distance = Math.abs(freq - center_freq)
       
-      // If outside the effective range, skip this point
-      if (distance > effectiveRange) return null
+      // If outside the width range, skip this point
+      if (distance > width / 2) return null
       
-      // Normalized distance: 0 at center, 1 at edge of effective range
-      const normalizedDist = distance / effectiveRange
+      // Normalized distance: 0 at center, 1 at edge
+      const normalizedDist = distance / (width / 2)
       
-      // Raised cosine bell curve (MATCHES BACKEND EXACTLY)
+      // Bell curve using raised cosine (smooth transition)
       // 1.0 at center, smoothly drops to 0 at edges
+      // MATCHES backend: 0.5 * (1 + np.cos(np.pi * normalized_dist))
       const bellCurve = 0.5 * (1 + Math.cos(Math.PI * normalizedDist))
       
       // Calculate effective gain at this frequency
       // Full gain at center, unity gain (no effect) at edges
+      // MATCHES backend: 1.0 + (gain - 1.0) * bell_curve
       const effectiveGain = 1.0 + (gain - 1.0) * bellCurve
       
       // Show the modified magnitude

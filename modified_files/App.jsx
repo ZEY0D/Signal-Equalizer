@@ -12,20 +12,21 @@ import {
   SelectValue, 
   ToggleGroup, 
   ToggleGroupItem 
-} from "../components-generic/ui"
+} from "@/components"
 import { Play, Pause, Square, FileUp, ZoomIn, ZoomOut, RefreshCw, Loader2 } from "lucide-react"
-import { useSignalProcessor } from "../hooks/useSignalProcessor"
-import * as api from "../services/api"
-import { healthCheck } from "../services/api"
-import { SliderManager, FrequencyGraph, SignalViewer } from "../components-generic"
-import Spectrogram from "../components-generic/Spectrogram"
+import { useSignalProcessor } from "./hooks/useSignalProcessor"
+import * as api from "./services/api"
+import { healthCheck } from "./services/api"
+import { SliderManager, FrequencyGraph, SignalViewer } from "@/components"
+import Spectrogram from "@/components/Spectrogram"
 
-export default function GenericMode() {
+export default function App() {
   const [speed, setSpeed] = useState([1])
   const [showSpectrograms, setShowSpectrograms] = useState(true)
   const [showSliderOverlays, setShowSliderOverlays] = useState(true)
+  const [equalizerMode, setEqualizerMode] = useState("generic")
   const [backendStatus, setBackendStatus] = useState("checking")
-  const [autoProcess, setAutoProcess] = useState(false)
+  const [autoProcess, setAutoProcess] = useState(true)
   const [frequencyScale, setFrequencyScale] = useState("linear")
   const [isPlaying, setIsPlaying] = useState(false)
   const [playbackSource, setPlaybackSource] = useState("input") // 'input' or 'output'
@@ -39,14 +40,14 @@ export default function GenericMode() {
   const playbackStartTimeRef = useRef(null)
   const animationFrameRef = useRef(null)
   
-  // Ref to store latest slider values (prevents stale state in callbacks)
-  const latestSlidersRef = useRef([])
-  
   // Cache full signal data for audio playback (not downsampled)
   const fullInputSignalRef = useRef(null)
   const fullOutputSignalRef = useRef(null)
   const inputCachedRef = useRef(false)
   const outputCachedRef = useRef(false)
+  
+  // Store latest slider state for debounced processing
+  const latestSlidersRef = useRef([])
 
   // Use our custom hook for signal processing
   const {
@@ -70,17 +71,17 @@ export default function GenericMode() {
     listConfigurations,
   } = useSignalProcessor()
   
+  // Keep latest sliders in ref for debounced processing
+  useEffect(() => {
+    latestSlidersRef.current = sliders
+  }, [sliders])
+  
   // State for output FFT (to show frequency spectrum of processed signal)
   const [outputFFT, setOutputFFT] = useState(null)
   
   // State for spectrograms
   const [inputSpectrogram, setInputSpectrogram] = useState(null)
   const [outputSpectrogram, setOutputSpectrogram] = useState(null)
-
-  // Sync latestSlidersRef with sliders state (prevents stale closure)
-  useEffect(() => {
-    latestSlidersRef.current = sliders
-  }, [sliders])
 
   // Debug: Track outputSignal changes
   useEffect(() => {
@@ -153,16 +154,17 @@ export default function GenericMode() {
   }
 
   // Handle process with debouncing
-  const handleProcess = useCallback(async () => {
-    if (!sessionId || latestSlidersRef.current.length === 0) return
+  const handleProcess = useCallback(async (customSliders = null) => {
+    // Always use the latest sliders from ref to avoid stale state during debounce
+    const slidersToUse = customSliders || latestSlidersRef.current
+    if (!sessionId || slidersToUse.length === 0) return
     
     try {
       // Clear output signal cache since it will change
       fullOutputSignalRef.current = null
       outputCachedRef.current = false
       
-      // Use latestSlidersRef.current to avoid stale state
-      await processSignal(latestSlidersRef.current)
+      await processSignal(slidersToUse)
       // Fetch output FFT to show processed frequency spectrum
       try {
         const outputFftData = await api.getOutputFFT(sessionId)
@@ -185,7 +187,7 @@ export default function GenericMode() {
     } catch (error) {
       console.error("Processing failed:", error)
     }
-  }, [sessionId, processSignal, showSpectrograms])
+  }, [sessionId, sliders, processSignal, showSpectrograms])
 
   // Debounced auto-process function
   const triggerAutoProcess = useCallback(() => {
@@ -217,25 +219,34 @@ export default function GenericMode() {
     setTimeout(() => triggerAutoProcess(), 100)
   }
   
-  // Wrapped updateSlider (no auto-trigger, manual Apply Changes required)
+  // Wrapped updateSlider to trigger auto-process
   const handleUpdateSlider = useCallback((id, updates) => {
+    // Get updated sliders immediately (before React state finishes updating)
     const updatedSliders = updateSlider(id, updates)
-    // Update ref immediately with latest values (prevents stale state)
-    latestSlidersRef.current = updatedSliders
-    // Only trigger auto-process if explicitly enabled
-    if (autoProcess) {
-      triggerAutoProcess()
+    
+    // Store in ref immediately for debounced processing
+    if (updatedSliders) {
+      latestSlidersRef.current = updatedSliders
     }
-  }, [updateSlider, triggerAutoProcess, autoProcess])
+    
+    // Pass updated sliders directly to avoid stale state
+    if (autoProcess && updatedSliders) {
+      // Clear existing timer
+      if (processTimerRef.current) {
+        clearTimeout(processTimerRef.current)
+      }
+      // Debounce - will use latest sliders from ref
+      processTimerRef.current = setTimeout(() => {
+        handleProcess()
+      }, 500)
+    }
+  }, [updateSlider, autoProcess, handleProcess])
   
-  // Wrapped removeSlider (no auto-trigger, manual Apply Changes required)
+  // Wrapped removeSlider to trigger auto-process
   const handleRemoveSlider = useCallback((id) => {
     removeSlider(id)
-    // Only trigger auto-process if explicitly enabled
-    if (autoProcess) {
-      triggerAutoProcess()
-    }
-  }, [removeSlider, triggerAutoProcess, autoProcess])
+    triggerAutoProcess()
+  }, [removeSlider, triggerAutoProcess])
 
   // Handle reset
   const handleReset = async () => {
@@ -398,23 +409,22 @@ export default function GenericMode() {
 
   // Synchronized zoom controls
   const handleZoomIn = () => {
-    setZoomLevel(prev => {
-      const newLevel = Math.min(prev * 1.5, 10)
-      return newLevel
-    })
+    setZoomLevel(prev => Math.min(prev * 1.5, 10))
   }
 
   const handleZoomOut = () => {
-    setZoomLevel(prev => {
-      const newLevel = Math.max(prev / 1.5, 0.1)
-      return newLevel
-    })
+    setZoomLevel(prev => Math.max(prev / 1.5, 0.1))
   }
 
   const handleResetView = () => {
     setZoomLevel(1)
-    setViewReset(prev => prev + 1) // Trigger reset in charts
+    setViewReset(prev => prev + 1)
   }
+  
+  // Handle zoom change from charts (wheel/pinch) - memoized to avoid loops
+  const handleChartZoom = useCallback((newZoomLevel) => {
+    setZoomLevel(newZoomLevel)
+  }, [])
 
   // Update playback speed in real-time
   useEffect(() => {
@@ -683,7 +693,7 @@ export default function GenericMode() {
                 zoomLevel={zoomLevel}
                 resetTrigger={viewReset}
                 syncId="signal-sync"
-                onZoomChange={setZoomLevel}
+                onZoomChange={handleChartZoom}
                 playbackProgress={playbackSource === 'input' ? playbackProgress : 0}
                 isPlaying={isPlaying && playbackSource === 'input'}
               />
@@ -726,7 +736,7 @@ export default function GenericMode() {
                 zoomLevel={zoomLevel}
                 resetTrigger={viewReset}
                 syncId="signal-sync"
-                onZoomChange={setZoomLevel}
+                onZoomChange={handleChartZoom}
                 playbackProgress={playbackSource === 'output' ? playbackProgress : 0}
                 isPlaying={isPlaying && playbackSource === 'output'}
               />
@@ -745,72 +755,52 @@ export default function GenericMode() {
               </Card>
             )}
 
-            {/* Input vs Output Frequency Comparison */}
+            {/* Output Frequency Spectrum - Compare with Input */}
             <Card className="p-6">
               <div className="mb-4">
-                <h2 className="text-lg font-semibold mb-2">📊 Input vs Output Comparison</h2>
-                <p className="text-xs text-muted-foreground mb-3">
-                  <span className="text-green-600 dark:text-green-400">Green = Input (original)</span> • 
-                  <span className="text-red-600 dark:text-red-400 ml-2">Red = Output (processed)</span>
-                  <br/>
-                  Look for differences in peak heights to see the effect of your sliders
-                </p>
-                <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-md text-xs">
-                  <p className="font-semibold text-yellow-700 dark:text-yellow-400">💡 How to See Changes:</p>
-                  <ul className="list-disc list-inside mt-1 text-muted-foreground space-y-1">
-                    <li><strong>MUTE a frequency (gain=0):</strong> Red line should drop to zero at that frequency</li>
-                    <li><strong>BOOST a frequency (gain=2):</strong> Red line should be taller than green at that frequency</li>
-                    <li><strong>No sliders:</strong> Red and green lines should overlap perfectly</li>
-                  </ul>
-                </div>
+                <h2 className="text-lg font-semibold mb-2">Output Frequency Spectrum</h2>
+                <p className="text-xs text-muted-foreground">Compare with input spectrum to see the effect of your sliders</p>
               </div>
-              <div className="space-y-4">
-                {/* Input FFT (Green) */}
-                <div className="border border-green-500/30 rounded-md p-3">
-                  <h3 className="text-sm font-medium mb-2 text-green-600 dark:text-green-400">Input Spectrum (Before)</h3>
-                  <FrequencyGraph
-                    fftData={fftData}
-                    sliders={sliders}
-                    scale={frequencyScale}
-                    showSliderOverlays={showSliderOverlays}
-                    height={200}
-                  />
-                </div>
-                
-                {/* Output FFT (Red) */}
-                <div className="border border-red-500/30 rounded-md p-3">
-                  <h3 className="text-sm font-medium mb-2 text-red-600 dark:text-red-400">Output Spectrum (After)</h3>
-                  <FrequencyGraph
-                    fftData={outputFFT}
-                    sliders={sliders}
-                    scale={frequencyScale}
-                    showSliderOverlays={showSliderOverlays}
-                    height={200}
-                  />
-                </div>
-
-                {/* Toggle Button for Scale */}
-                <div className="flex justify-center pt-2">
-                  <ToggleGroup 
-                    type="single" 
-                    value={frequencyScale} 
-                    onValueChange={setFrequencyScale}
-                    className="w-full max-w-md"
-                  >
-                    <ToggleGroupItem value="linear" className="flex-1" disabled={!fftData}>
-                      Linear
-                    </ToggleGroupItem>
-                    <ToggleGroupItem value="audiogram" className="flex-1" disabled={!fftData}>
-                      Audiogram
-                    </ToggleGroupItem>
-                  </ToggleGroup>
-                </div>
-              </div>
+              <FrequencyGraph
+                fftData={outputFFT}
+                sliders={[]}
+                scale={frequencyScale}
+                showSliderOverlays={false}
+                height={300}
+              />
             </Card>
           </div>
 
           {/* Right Column - Sidebar (~30%) */}
           <div className="flex-[30] space-y-6 min-w-0">
+            {/* Input Frequency Graph */}
+            <Card className="p-6">
+              <div className="mb-4">
+                <h2 className="text-lg font-semibold mb-2 text-green-600 dark:text-green-400">Input Frequency Spectrum</h2>
+                <p className="text-xs text-muted-foreground">Before processing - shows original signal frequencies</p>
+                <ToggleGroup 
+                  type="single" 
+                  value={frequencyScale} 
+                  onValueChange={setFrequencyScale}
+                  className="w-full"
+                >
+                  <ToggleGroupItem value="linear" className="flex-1" disabled={!fftData}>
+                    Linear
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="audiogram" className="flex-1" disabled={!fftData}>
+                    Audiogram
+                  </ToggleGroupItem>
+                </ToggleGroup>
+              </div>
+              <FrequencyGraph
+                fftData={fftData}
+                sliders={sliders}
+                scale={frequencyScale}
+                showSliderOverlays={showSliderOverlays}
+                height={300}
+              />
+            </Card>
+
             {/* Real-Time Observation Guide */}
             <Card className="p-6 bg-blue-500/5 border-blue-500/20">
               <h2 className="text-lg font-semibold mb-3 text-blue-600 dark:text-blue-400">🔍 What to Observe</h2>
@@ -844,6 +834,23 @@ export default function GenericMode() {
 
             {/* Equalizer Controls */}
             <Card className="p-6">
+              <div className="mb-4">
+                <Label htmlFor="mode" className="text-sm mb-2 block font-semibold">
+                  Equalizer Mode
+                </Label>
+                <Select value={equalizerMode} onValueChange={setEqualizerMode}>
+                  <SelectTrigger id="mode">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="generic">Generic (Dynamic Sliders)</SelectItem>
+                    <SelectItem value="instruments" disabled>Musical Instruments (Coming Soon)</SelectItem>
+                    <SelectItem value="animals" disabled>Animal Sounds (Coming Soon)</SelectItem>
+                    <SelectItem value="voices" disabled>Human Voices (Coming Soon)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
               {/* Auto-process toggle */}
               <div className="flex items-center justify-between mb-4 pb-4 border-b">
                 <div className="flex items-center gap-2">
@@ -855,9 +862,6 @@ export default function GenericMode() {
                   <Label htmlFor="auto-process" className="text-sm cursor-pointer">
                     Auto-process on changes
                   </Label>
-                  {!autoProcess && (
-                    <span className="text-xs text-muted-foreground">(Manual mode - click "Apply Changes")</span>
-                  )}
                 </div>
                 {autoProcess && (
                   <span className="text-xs text-green-600">● Live</span>
