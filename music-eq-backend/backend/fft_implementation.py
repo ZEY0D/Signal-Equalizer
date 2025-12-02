@@ -111,10 +111,12 @@ def fft_cooley_tukey(x):
         raise ValueError(f"Input length must be power of 2, got {N}")
     
     # Divide: split into even and odd indices
+    # on the first divide
     even = fft_cooley_tukey(x[0::2])  # x[0], x[2], x[4], ...
     odd = fft_cooley_tukey(x[1::2])   # x[1], x[3], x[5], ...
     
-    # Conquer: compute twiddle factors
+    # Conquer step
+    # first compute twiddle factors
     # Twiddle factor: W_N^k = e^(-2πi*k/N)
     k = np.arange(N // 2)
     W = np.exp(-2j * np.pi * k / N)

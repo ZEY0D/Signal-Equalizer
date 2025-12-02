@@ -17,7 +17,7 @@ import uuid
 # --- Import Your Custom Modules ---
 # This matches your project structure image (api/ and core/ folders)
 from backend.equalizer_core import SignalProcessor, create_synthetic_test_signal
-from backend.fft_implementation import fft, ifft, fft_magnitude, fft_phase, frequency_bins
+from backend.fft_implementation import fft, ifft, fft_magnitude, fft_phase, frequency_bins, rfft
 import time
 import matplotlib
 matplotlib.use('Agg')
@@ -56,6 +56,11 @@ class ConfigSaveRequest(BaseModel):
 class ResetRequest(BaseModel):
     """Defines the request for resetting"""
     session_id: str
+
+class MixDemucsRequest(BaseModel):
+    """Defines the request for mixing Demucs stems with slider gains"""
+    session_id: str
+    gains: List[float]  # [drums_gain, bass_gain, vocals_gain, other_gain]
 
 class SignalInfoResponse(BaseModel):
     """Defines the info returned on file upload"""
@@ -176,7 +181,7 @@ def compute_spectrogram_data(signal, sample_rate, window_size=1024, overlap=0.75
         
         # Apply window and compute FFT
         windowed = segment * window
-        fft_result = np.fft.rfft(windowed)
+        fft_result = rfft(windowed)
         magnitude[i, :] = np.abs(fft_result)
     
     return times, frequencies, magnitude
@@ -200,6 +205,8 @@ async def health_check():
         'message': 'Signal Equalizer Backend (FastAPI) is running',
         'active_sessions': len(sessions)
     }
+
+
 
 @app.post("/api/upload", response_model=SignalInfoResponse)
 async def upload_file(file: UploadFile = File(...)):
@@ -228,6 +235,16 @@ async def upload_file(file: UploadFile = File(...)):
         print(f"   Session: {session_id}")
         processor.compute_fft()
         print(f"✓ FFT computed and cached in session")
+        
+        # VERIFY: Check if data and original_data are identical after upload
+        if processor.data is not None and processor.original_data is not None:
+            arrays_equal = np.array_equal(processor.data, processor.original_data)
+            max_diff = np.max(np.abs(processor.data - processor.original_data))
+            print(f"🔍 DATA INTEGRITY CHECK:")
+            print(f"   processor.data == processor.original_data: {arrays_equal}")
+            print(f"   Max difference: {max_diff:.2e}")
+            if not arrays_equal:
+                print(f"   ⚠️  WARNING: Data has been modified during upload!")
         print(f"{'='*60}\n")
         
         # Store in session
@@ -519,7 +536,7 @@ async def compute_fft_for_type(signal_type: str, session_id: str, positive_only:
 
 @app.get("/api/signal/input", response_model=SignalDataResponse)
 async def get_input_signal(session_id: str, max_points: int = 10000):
-    """Gets the input signal waveform for (Student 2's) viewer."""
+    """Gets the input signal waveform for the viewer."""
     processor = await get_session(session_id)
     signal = processor.original_data
     
@@ -765,11 +782,13 @@ async def separate_with_demucs(session_id: str, model: str = "mdx_extra_q"):
     input_path = None
     if getattr(processor, 'filepath', None):
         input_path = processor.filepath
+        print(f"   Using UPLOADED file: {input_path}")
     else:
         # Save current signal to temporary file
-        tmp_input = os.path.join(UPLOAD_FOLDER, f"{session_id}_demucs_input.wav")
+        tmp_input = os.path.join(UPLOAD_FOLDER, f"{session_id}_mixed_output.wav")
         save_signal(tmp_input, processor.original_data, processor.sample_rate)
         input_path = tmp_input
+        print(f"   Using GENERATED file from original_data: {input_path}")
     
     # Output directory for Demucs stems
     demucs_output_dir = os.path.join(OUTPUT_FOLDER, session_id, "demucs")
@@ -859,6 +878,181 @@ async def get_demucs_stem(session_id: str, name: str, model: str = "mdx_extra_q"
     return FileResponse(
         stem_path,
         media_type=media_type,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
+
+
+@app.post("/api/mix-demucs-stems")
+async def mix_demucs_stems(request: MixDemucsRequest):
+    """
+    Mix Demucs-separated stems (drums, bass, vocals, other) with slider gains
+    
+    Args:
+        request: Contains session_id and gains array [drums, bass, vocals, piano/other]
+    
+    Returns:
+        dict: Mixed audio URL, waveform data, FFT data, spectrogram data
+    """
+    session_id = request.session_id
+    gains = request.gains
+    
+    # Validate session
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    processor = sessions[session_id]
+    
+    # Get stem file paths
+    filename_base = None
+    if getattr(processor, 'filepath', None):
+        filename_base = Path(processor.filepath).stem
+    else:
+        filename_base = f"{session_id}_demucs_input"
+    
+    model = "mdx_extra_q"  # Default model
+    demucs_output_dir = os.path.join(OUTPUT_FOLDER, session_id, "demucs", model, filename_base)
+    
+    # Check if stems exist
+    if not os.path.exists(demucs_output_dir):
+        raise HTTPException(
+            status_code=404,
+            detail="Demucs stems not found. Please run AI separation first."
+        )
+    
+    try:
+        print(f"\n{'='*60}")
+        print(f"🎛️ MIXING DEMUCS STEMS")
+        print(f"   Session: {session_id}")
+        print(f"   Gains: {gains}")
+        print(f"{'='*60}\n")
+        
+        # Load stems (order: drums, bass, vocals, other)
+        stem_names = ['drums', 'bass', 'vocals', 'other']
+        stems_data = []
+        sample_rate = None
+        
+        for stem_name in stem_names:
+            stem_path_mp3 = os.path.join(demucs_output_dir, f"{stem_name}.mp3")
+            stem_path_wav = os.path.join(demucs_output_dir, f"{stem_name}.wav")
+            
+            if os.path.exists(stem_path_wav):
+                stem_path = stem_path_wav
+            elif os.path.exists(stem_path_mp3):
+                stem_path = stem_path_mp3
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Stem '{stem_name}' not found in {demucs_output_dir}"
+                )
+            
+            # Load stem audio
+            import soundfile as sf
+            stem_signal, sr = sf.read(stem_path)
+            
+            # Convert to mono if stereo
+            if len(stem_signal.shape) > 1:
+                stem_signal = np.mean(stem_signal, axis=1)
+            
+            stems_data.append(stem_signal)
+            if sample_rate is None:
+                sample_rate = sr
+        
+        # Ensure all stems have the same length (pad with zeros if needed)
+        max_length = max(len(s) for s in stems_data)
+        for i in range(len(stems_data)):
+            if len(stems_data[i]) < max_length:
+                stems_data[i] = np.pad(stems_data[i], (0, max_length - len(stems_data[i])))
+        
+        # Apply gains and mix
+        mixed_signal = np.zeros(max_length, dtype=np.float64)
+        for i, (stem, gain) in enumerate(zip(stems_data, gains)):
+            print(f"   {stem_names[i]}: gain={gain:.2f}x")
+            mixed_signal += stem * gain
+        
+        # Normalize to prevent clipping
+        max_val = np.max(np.abs(mixed_signal))
+        if max_val > 0:
+            mixed_signal = mixed_signal / max_val * 0.95  # Leave headroom
+        
+        # Save mixed audio
+        mixed_output_path = os.path.join(OUTPUT_FOLDER, session_id, "demucs_mixed.wav")
+        save_signal(mixed_output_path, mixed_signal, sample_rate)
+        
+        print(f"   ✓ Mixed audio saved to: {mixed_output_path}")
+        
+        # Compute waveform data (downsample for visualization)
+        downsample_factor = max(1, len(mixed_signal) // 2000)
+        waveform_data = mixed_signal[::downsample_factor].tolist()
+        time_axis = (np.arange(len(waveform_data)) * downsample_factor / sample_rate).tolist()
+        
+        # Compute FFT
+        fft_result = fft(mixed_signal)
+        freqs = frequency_bins(len(mixed_signal), sample_rate)
+        mags = fft_magnitude(fft_result)
+        
+        # Downsample FFT for visualization (take first half - positive frequencies)
+        half_len = len(freqs) // 2
+        fft_downsample = max(1, half_len // 1000)
+        fft_freqs = freqs[:half_len:fft_downsample].tolist()
+        fft_mags = mags[:half_len:fft_downsample].tolist()
+        
+        # Compute spectrogram (use the function defined in this file)
+        times, frequencies, magnitude = compute_spectrogram_data(mixed_signal, sample_rate)
+        spec_data = {
+            'times': times.tolist(),
+            'frequencies': frequencies.tolist(),
+            'magnitude': magnitude.tolist(),
+            'sample_rate': sample_rate
+        }
+        
+        print(f"   ✓ Visualizations computed\n")
+        
+        return {
+            'success': True,
+            'mixed_audio_url': f'/audio-demucs-mixed?session_id={session_id}',
+            'waveform': {
+                'data': waveform_data,
+                'time': time_axis,
+                'sample_rate': sample_rate
+            },
+            'fft': {
+                'frequencies': fft_freqs,
+                'magnitudes': fft_mags
+            },
+            'spectrogram': spec_data
+        }
+        
+    except Exception as e:
+        print(f"   ❌ Error mixing stems: {str(e)}\n")
+        raise HTTPException(status_code=500, detail=f"Failed to mix stems: {str(e)}")
+
+
+@app.get("/api/audio-demucs-mixed")
+async def get_demucs_mixed(session_id: str):
+    """
+    Serve the mixed Demucs audio file
+    
+    Args:
+        session_id: Session ID
+    
+    Returns:
+        FileResponse: Mixed audio WAV file
+    """
+    mixed_path = os.path.join(OUTPUT_FOLDER, session_id, "demucs_mixed.wav")
+    
+    if not os.path.exists(mixed_path):
+        raise HTTPException(
+            status_code=404,
+            detail="Mixed audio not found. Please mix stems first."
+        )
+    
+    return FileResponse(
+        mixed_path,
+        media_type="audio/wav",
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",

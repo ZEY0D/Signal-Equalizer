@@ -1,40 +1,3 @@
-// // src/components/EqualizerSliders.jsx
-// import React from "react"; 
-// // تم حذف { useRef } لأننا لا نحتاجه، وهذا يزيل مصدر الخطأ.
-
-// // Renamed from InstrumentSliders to be mode-agnostic
-
-// export default function EqualizerSliders({ labels, onChange, disabled }) {
-  
-//   // تم حذف: const initialValues = useRef(labels.map(() => 0));
-
-//   return (
-//     <div style={{ display: "flex", justifyContent: "space-around" }}>
-//       {labels.map((label, i) => (
-//         <div key={label} style={{ textAlign: "center" }}>
-//           <label style={{ display: "block", color: disabled ? '#555' : "#aaa", marginBottom: "10px" }}>
-//             {label}
-//           </label>
-//           <input
-//             type="range"
-//             min={-20}
-//             max={20}
-//             step={1}
-//             // القيمة الافتراضية أصبحت 0 مباشرة.
-//             defaultValue={0} 
-//             onMouseUp={(e) => onChange(i, Number(e.target.value))} // Fetch data only on release
-//             disabled={disabled}
-//             style={{ 
-//                 cursor: disabled ? 'not-allowed' : "pointer",
-//                 filter: disabled ? 'grayscale(100%)' : 'none'
-//             }}
-//           />
-//           <div style={{fontSize: "0.8rem", color: "#666"}}>dB</div>
-//         </div>
-//       ))}
-//     </div>
-//   );
-// }
 import React from 'react';
 
 // Component for the equalizer sliders.
@@ -99,13 +62,19 @@ const EqualizerSliders = ({ labels, onChange, disabled }) => {
             {labels.map((label, index) => (
                 <div key={index} style={sliderStyle}>
                     <label style={{ marginBottom: '10px', color: '#ccc', textAlign: 'center' }}>
-                        {label} <br/> (Gain: {gains[index].toFixed(1)} dB)
+                        {label} <br/> 
+                        <span style={{ 
+                            color: gains[index] > 0 ? '#00ff88' : gains[index] < 0 ? '#ff6b6b' : '#fff',
+                            fontWeight: 'bold'
+                        }}>
+                            {gains[index].toFixed(1)} dB
+                        </span>
                     </label>
                     <input
                         type="range"
-                        min="-10" // Define the range of gain (e.g., -10dB to +10dB)
-                        max="10"
-                        step="0.1"
+                        min="-40" // Extended range: -40dB (near mute) to +20dB (boost)
+                        max="20"
+                        step="0.5"
                         value={gains[index]}
                         onChange={(e) => handleSliderInput(index, e)}
                         style={inputStyle}

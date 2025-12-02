@@ -273,27 +273,44 @@ export function FrequencyGraph({
   }, [scale])
 
   // Create slider overlay data (bell curve representing the gain effect)
+  // MUST match backend algorithm in equalizer_core.py create_gain_array_from_sliders()
   const createSliderOverlay = (slider, frequencies, baseMagnitudes) => {
     const { center_freq, width, gain } = slider
+    
+    // Determine effective range (matches backend logic)
+    let effectiveRange
+    if (gain < 0.1) {
+      // MUTE: use 5x width for complete frequency elimination
+      effectiveRange = (width / 2) * 5.0
+    } else if (gain < 0.3 || gain > 1.7) {
+      // Other extreme gains: use 3x width
+      effectiveRange = (width / 2) * 3.0
+    } else {
+      // Moderate gain: use standard width
+      effectiveRange = width / 2
+    }
     
     return frequencies.map((freq, i) => {
       // Calculate distance from center frequency
       const distance = Math.abs(freq - center_freq)
       
-      // If outside the width range, skip this point
-      if (distance > width / 2) return null
+      // If outside the effective range, skip this point
+      if (distance > effectiveRange) return null
       
-      // Create a smooth bell curve using cosine (0 at edges, 1 at center)
-      const normalizedDistance = (distance / (width / 2)) // 0 at center, 1 at edge
-      const bellCurve = Math.cos(normalizedDistance * Math.PI / 2) ** 2
+      // Normalized distance: 0 at center, 1 at edge of effective range
+      const normalizedDist = distance / effectiveRange
       
-      // Calculate the gain effect at this frequency (linear magnitude)
-      // gain of 1.0 = no change, 2.0 = 2x louder, 0.5 = half as loud
-      const gainEffect = gain * bellCurve + (1 - bellCurve)
+      // Raised cosine bell curve (MATCHES BACKEND EXACTLY)
+      // 1.0 at center, smoothly drops to 0 at edges
+      const bellCurve = 0.5 * (1 + Math.cos(Math.PI * normalizedDist))
+      
+      // Calculate effective gain at this frequency
+      // Full gain at center, unity gain (no effect) at edges
+      const effectiveGain = 1.0 + (gain - 1.0) * bellCurve
       
       // Show the modified magnitude
       const baseMag = baseMagnitudes[i] || 0
-      const modifiedMag = baseMag * gainEffect
+      const modifiedMag = baseMag * effectiveGain
       
       return {
         x: freq,

@@ -25,7 +25,7 @@ export default function GenericMode() {
   const [showSpectrograms, setShowSpectrograms] = useState(true)
   const [showSliderOverlays, setShowSliderOverlays] = useState(true)
   const [backendStatus, setBackendStatus] = useState("checking")
-  const [autoProcess, setAutoProcess] = useState(true)
+  const [autoProcess, setAutoProcess] = useState(false)
   const [frequencyScale, setFrequencyScale] = useState("linear")
   const [isPlaying, setIsPlaying] = useState(false)
   const [playbackSource, setPlaybackSource] = useState("input") // 'input' or 'output'
@@ -38,6 +38,9 @@ export default function GenericMode() {
   const audioSourceRef = useRef(null)
   const playbackStartTimeRef = useRef(null)
   const animationFrameRef = useRef(null)
+  
+  // Ref to store latest slider values (prevents stale state in callbacks)
+  const latestSlidersRef = useRef([])
   
   // Cache full signal data for audio playback (not downsampled)
   const fullInputSignalRef = useRef(null)
@@ -73,6 +76,11 @@ export default function GenericMode() {
   // State for spectrograms
   const [inputSpectrogram, setInputSpectrogram] = useState(null)
   const [outputSpectrogram, setOutputSpectrogram] = useState(null)
+
+  // Sync latestSlidersRef with sliders state (prevents stale closure)
+  useEffect(() => {
+    latestSlidersRef.current = sliders
+  }, [sliders])
 
   // Debug: Track outputSignal changes
   useEffect(() => {
@@ -146,14 +154,15 @@ export default function GenericMode() {
 
   // Handle process with debouncing
   const handleProcess = useCallback(async () => {
-    if (!sessionId || sliders.length === 0) return
+    if (!sessionId || latestSlidersRef.current.length === 0) return
     
     try {
       // Clear output signal cache since it will change
       fullOutputSignalRef.current = null
       outputCachedRef.current = false
       
-      await processSignal()
+      // Use latestSlidersRef.current to avoid stale state
+      await processSignal(latestSlidersRef.current)
       // Fetch output FFT to show processed frequency spectrum
       try {
         const outputFftData = await api.getOutputFFT(sessionId)
@@ -176,7 +185,7 @@ export default function GenericMode() {
     } catch (error) {
       console.error("Processing failed:", error)
     }
-  }, [sessionId, sliders, processSignal, showSpectrograms])
+  }, [sessionId, processSignal, showSpectrograms])
 
   // Debounced auto-process function
   const triggerAutoProcess = useCallback(() => {
@@ -208,18 +217,25 @@ export default function GenericMode() {
     setTimeout(() => triggerAutoProcess(), 100)
   }
   
-  // Wrapped updateSlider to trigger auto-process
+  // Wrapped updateSlider (no auto-trigger, manual Apply Changes required)
   const handleUpdateSlider = useCallback((id, updates) => {
-    console.log('🔧 GenericMode: Updating slider', id, 'with:', updates);
-    updateSlider(id, updates)
-    triggerAutoProcess()
-  }, [updateSlider, triggerAutoProcess])
+    const updatedSliders = updateSlider(id, updates)
+    // Update ref immediately with latest values (prevents stale state)
+    latestSlidersRef.current = updatedSliders
+    // Only trigger auto-process if explicitly enabled
+    if (autoProcess) {
+      triggerAutoProcess()
+    }
+  }, [updateSlider, triggerAutoProcess, autoProcess])
   
-  // Wrapped removeSlider to trigger auto-process
+  // Wrapped removeSlider (no auto-trigger, manual Apply Changes required)
   const handleRemoveSlider = useCallback((id) => {
     removeSlider(id)
-    triggerAutoProcess()
-  }, [removeSlider, triggerAutoProcess])
+    // Only trigger auto-process if explicitly enabled
+    if (autoProcess) {
+      triggerAutoProcess()
+    }
+  }, [removeSlider, triggerAutoProcess, autoProcess])
 
   // Handle reset
   const handleReset = async () => {
@@ -326,11 +342,18 @@ export default function GenericMode() {
       
       // Start progress animation
       const duration = signalData.length / sampleRate
+      let lastUpdate = 0
       const updateProgress = () => {
         if (audioSourceRef.current && audioCtx) {
           const elapsed = audioCtx.currentTime - playbackStartTimeRef.current
           const progress = Math.min(elapsed * speed[0], duration)
-          setPlaybackProgress(progress)
+          
+          // Throttle updates to ~30 FPS to avoid excessive re-renders
+          const now = performance.now()
+          if (now - lastUpdate > 33) {
+            setPlaybackProgress(progress)
+            lastUpdate = now
+          }
           
           if (progress < duration) {
             animationFrameRef.current = requestAnimationFrame(updateProgress)
@@ -832,6 +855,9 @@ export default function GenericMode() {
                   <Label htmlFor="auto-process" className="text-sm cursor-pointer">
                     Auto-process on changes
                   </Label>
+                  {!autoProcess && (
+                    <span className="text-xs text-muted-foreground">(Manual mode - click "Apply Changes")</span>
+                  )}
                 </div>
                 {autoProcess && (
                   <span className="text-xs text-green-600">● Live</span>

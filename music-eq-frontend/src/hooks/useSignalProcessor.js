@@ -166,13 +166,6 @@ export function useSignalProcessor() {
         max_magnitude: response.max_magnitude
       });
 
-      // Update FFT data with processed result
-      setFftData({
-        frequencies: response.frequencies,
-        magnitudes: response.magnitudes,
-        length: response.frequencies.length,
-      });
-
       // Fetch the updated output signal
       console.log('📊 Fetching updated output signal...');
       await fetchOutputSignal();
@@ -203,16 +196,17 @@ export function useSignalProcessor() {
 
   /**
    * Update existing slider
+   * Returns the updated slider array synchronously
    */
   const updateSlider = useCallback((id, updates) => {
-    console.log('📝 useSignalProcessor: updateSlider called with:', { id, updates });
+    let updatedSliders;
     setSliders((prev) => {
-      const updated = prev.map((slider) =>
+      updatedSliders = prev.map((slider) =>
         slider.id === id ? { ...slider, ...updates } : slider
       );
-      console.log('📝 Updated sliders state:', updated);
-      return updated;
+      return updatedSliders;
     });
+    return updatedSliders;
   }, []);
 
   /**

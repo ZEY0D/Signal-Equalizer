@@ -364,101 +364,206 @@ class SignalProcessor:
             "modified": self.modified_freq_domain is not None
         }
     
+    # def create_gain_array_from_sliders(self, slider_list):
+    #     """
+    #     Helper function to create gain array from slider parameters.
+        
+    #     This is what Student 4 will use to convert slider UI state into a gain array.
+    #     Works with rfft output (positive frequencies only, 0 to Nyquist).
+        
+    #     IMPORTANT: When sliders overlap, their gains are MULTIPLIED (not replaced),
+    #     simulating real analog equalizers where filters cascade.
+    #     Uses smooth bell-curve transitions instead of rectangular windows.
+        
+    #     Args:
+    #         slider_list (list): List of dicts, each containing:
+    #             - 'center_freq' (float): Center frequency in Hz
+    #             - 'width' (float): Width of frequency range in Hz
+    #             - 'gain' (float): Gain value (0 to 2)
+        
+    #     Returns:
+    #         np.ndarray: Gain array ready for apply_frequency_gain()
+        
+    #     Example:
+    #         >>> sliders = [
+    #         ...     {'center_freq': 100, 'width': 50, 'gain': 1.5},
+    #         ...     {'center_freq': 1000, 'width': 200, 'gain': 0.8}
+    #         ... ]
+    #         >>> gain = processor.create_gain_array_from_sliders(sliders)
+    #         >>> processor.apply_frequency_gain(gain)
+    #     """
+    #     if self.frequencies is None:
+    #         self.compute_fft()
+        
+    #     # Start with unity gain (no change)
+    #     gain_array = np.ones(len(self.frequencies))
+        
+    #     # Apply each slider's gain to its frequency range
+    #     # MULTIPLY gains when sliders overlap (like real analog EQ)
+    #     for slider in slider_list:
+    #         center = slider['center_freq']
+    #         width = slider['width']
+    #         gain = slider['gain']
+            
+    #         # Debug logging
+    #         print(f"  Slider: {center:.1f} Hz ± {width/2:.1f} Hz, gain = {gain:.2f}")
+            
+    #         # Determine the effective range based on gain
+    #         # For MUTE operations, use very wide range for complete elimination
+    #         # For other extreme gains, use moderate widening
+    #         # For moderate gains (0.5-1.5), use tighter band for precision
+    #         if gain < 0.1:
+    #             # MUTE: use 5x width for complete frequency elimination
+    #             effective_range = width / 2 * 5.0
+    #         elif gain < 0.3 or gain > 1.7:
+    #             # Other extreme gains: use 3x width
+    #             effective_range = width / 2 * 3.0
+    #         else:
+    #             # Moderate gain: use standard width
+    #             effective_range = width / 2
+            
+    #         # Create smooth bell curve (raised cosine window) for this slider
+    #         # This prevents artifacts from sharp frequency cutoffs
+    #         for i, freq in enumerate(self.frequencies):
+    #             # Calculate distance from center frequency
+    #             # Handle both positive and negative frequencies (for symmetry in FFT)
+    #             distance = abs(abs(freq) - center)
+                
+    #             # Only affect frequencies within the effective range
+    #             if distance <= effective_range:
+    #                 # Normalized distance: 0 at center, 1 at edge of effective range
+    #                 normalized_dist = distance / effective_range
+                    
+    #                 # Bell curve using raised cosine (smooth transition)
+    #                 # 1.0 at center, smoothly drops to 0 at edges
+    #                 bell_curve = 0.5 * (1 + np.cos(np.pi * normalized_dist))
+                    
+    #                 # Calculate effective gain at this frequency
+    #                 # Full gain at center, unity gain (no effect) at edges
+    #                 effective_gain = 1.0 + (gain - 1.0) * bell_curve
+                    
+    #                 # MULTIPLY (not assign) to combine overlapping sliders
+    #                 gain_array[i] *= effective_gain
+        
+    #     # Debug: show gain range
+    #     print(f"  Gain array: min = {np.min(gain_array):.3f}, max = {np.max(gain_array):.3f}")
+        
+    #     return gain_array
     def create_gain_array_from_sliders(self, slider_list):
         """
-        Helper function to create gain array from slider parameters.
-        
-        This creates REAL frequency isolation for separation:
-        - When any slider is boosted (gain > 1), ONLY those boosted bands are kept
-        - Everything else is completely muted (gain = 0)
-        - This gives you true instrument/sound isolation
-        
-        Args:
-            slider_list (list): List of dicts, each containing:
-                - 'center_freq' (float): Center frequency in Hz
-                - 'width' (float): Width of frequency range in Hz
-                - 'gain' (float): Gain value (0 to 2+)
-                    - 1.0 = no change (0 dB)
-                    - 2.0 = double amplitude (+6 dB)
-                    - 0.5 = half amplitude (-6 dB)
-                    - 0.0 = silence (-∞ dB)
-        
-        Returns:
-            np.ndarray: Gain array ready for apply_frequency_gain()
+        Create a gain array from slider parameters.
+
+        Backwards-compatible behavior: auto-detects whether sliders use
+        linear multipliers (e.g. 0.5, 1.0, 1.5) or dB values (e.g. -12, 0, +6).
+
+        - Linear (generic) sliders: start with unity (1.0) gains and MULTIPLY
+        bell-shaped contributions for each slider (sliders cascade).
+        - dB (customized) sliders: convert dB -> linear, start with zeros and
+        use max() to combine overlapping regions (mirrors previous simpler fix).
+
+        This function preserves the original signature so existing callers
+        in the codebase do not need changes.
         """
         if self.frequencies is None:
             self.compute_fft()
-        
-        # Convert frequencies to absolute (symmetric bins)
+
         freqs = np.abs(self.frequencies)
-        
-        # Check if any slider is boosted (gain > 1.0) - this means user wants ISOLATION
-        any_boosted = any(slider['gain'] > 1.0 for slider in slider_list)
-        
-        if any_boosted:
-            # ISOLATION MODE: Start with silence (0.0) and only keep boosted bands
-            gain_array = np.zeros(len(self.frequencies))
-            
-            for slider in slider_list:
-                if slider['gain'] > 1.0:  # Only apply boosted sliders
-                    center = float(slider['center_freq'])
-                    width = float(slider['width'])
-                    gain = float(slider['gain'])
-                    
-                    if width <= 0:
-                        continue
-                    
-                    # Create sharper band-pass filter with steeper rolloff
-                    # Using raised cosine window for smooth edges but tight band
-                    freq_min = center - width / 2
-                    freq_max = center + width / 2
-                    
-                    # Transition width (10% of band width for smooth but sharp edges)
-                    transition = max(10, width * 0.1)
-                    
-                    for i, f in enumerate(freqs):
-                        if freq_min <= f <= freq_max:
-                            # Inside the band - full gain
-                            gain_array[i] = gain
-                        elif freq_min - transition <= f < freq_min:
-                            # Lower transition (smooth ramp up)
-                            alpha = (f - (freq_min - transition)) / transition
-                            gain_array[i] = max(gain_array[i], gain * (0.5 - 0.5 * np.cos(np.pi * alpha)))
-                        elif freq_max < f <= freq_max + transition:
-                            # Upper transition (smooth ramp down)
-                            alpha = (f - freq_max) / transition
-                            gain_array[i] = max(gain_array[i], gain * (0.5 + 0.5 * np.cos(np.pi * alpha)))
+        n = len(freqs)
+
+        # Handle empty frequencies defensively
+        if n == 0:
+            return np.zeros(0, dtype=float)
+
+        # Gather raw gains to decide convention
+        raw_gains = [float(slider['gain']) for slider in slider_list]
+
+        # Heuristic detection: if all gains are within [0.0, 3.0], treat as linear multipliers
+        # (common UI convention). Otherwise treat as dB values.
+
+        if all((g >= 0.0 and g <= 2.0) for g in raw_gains):
+            detected = 'generic'
         else:
-            # STANDARD EQ MODE: Start with unity and apply attenuation/boost
-            gain_array = np.ones(len(self.frequencies))
-            
-            for slider in slider_list:
+            detected = 'customized'
+
+        print(f"🎛 Processing {len(slider_list)} sliders in {detected} mode:")
+
+        eps_unity = 0.01
+
+        # GENERIC: multiplicative behavior (start from ones)
+        if detected == 'generic':
+            gain_array = np.ones(n, dtype=float)
+
+            for i, slider in enumerate(slider_list):
+                linear_gain = float(slider['gain'])
                 center = float(slider['center_freq'])
                 width = float(slider['width'])
-                gain = float(slider['gain'])
-                
-                if width <= 0:
-                    continue
-                
-                # Standard EQ with smooth Gaussian response
-                freq_min = center - width / 2
-                freq_max = center + width / 2
-                transition = max(10, width * 0.15)
-                
-                for i, f in enumerate(freqs):
-                    if freq_min <= f <= freq_max:
-                        gain_array[i] *= gain
-                    elif freq_min - transition <= f < freq_min:
-                        alpha = (f - (freq_min - transition)) / transition
-                        blend = 0.5 - 0.5 * np.cos(np.pi * alpha)
-                        gain_array[i] *= (1.0 + (gain - 1.0) * blend)
-                    elif freq_max < f <= freq_max + transition:
-                        alpha = (f - freq_max) / transition
-                        blend = 0.5 + 0.5 * np.cos(np.pi * alpha)
-                        gain_array[i] *= (1.0 + (gain - 1.0) * blend)
-        
-        return gain_array
 
+                print(f"  [{i}] Center: {center}Hz, Width: {width}Hz, Gain: {linear_gain:.2f}x")
+
+                # Skip near-unity or invalid widths
+                if abs(linear_gain - 1.0) <= eps_unity or width <= 0:
+                    continue
+
+                half_width = max(1e-6, width / 2.0)
+                if linear_gain < 0.1:
+                    effective_range = half_width * 5.0
+                elif linear_gain < 0.3 or linear_gain > 1.7:
+                    effective_range = half_width * 3.0
+                else:
+                    effective_range = half_width
+
+                effective_range = max(1e-6, effective_range)
+
+                # Apply smooth bell curve
+                for idx, freq in enumerate(freqs):
+                    distance = abs(freq - center)
+                    if distance <= effective_range:
+                        normalized_dist = distance / effective_range
+                        bell_curve = 0.5 * (1.0 + np.cos(np.pi * normalized_dist))
+                        effective_gain = 1.0 + (linear_gain - 1.0) * bell_curve
+                        gain_array[idx] *= effective_gain
+
+        # CUSTOMIZED: sliders are in dB; convert to linear and use max blending
+        else:
+            gain_array = np.zeros(n, dtype=float)
+
+            for i, slider in enumerate(slider_list):
+                gain_db = float(slider['gain'])
+                if gain_db <= -60.0:
+                    gain_linear = 0.0
+                else:
+                    gain_linear = 10 ** (gain_db / 20.0)
+
+                center = float(slider['center_freq'])
+                width = float(slider['width'])
+
+                print(f"  [{i}] dB: {gain_db} → Linear: {gain_linear:.4f}")
+
+                if gain_linear <= 0.0 or width <= 0:
+                    continue
+
+                freq_min = center - width / 2.0
+                freq_max = center + width / 2.0
+                transition = max(10.0, width * 0.1)
+
+                for idx, freq in enumerate(freqs):
+                    if freq_min <= freq <= freq_max:
+                        gain_array[idx] = max(gain_array[idx], gain_linear)
+                    elif freq_min - transition <= freq < freq_min:
+                        alpha = (freq - (freq_min - transition)) / transition
+                        blend = 0.5 - 0.5 * np.cos(np.pi * alpha)
+                        gain_array[idx] = max(gain_array[idx], gain_linear * blend)
+                    elif freq_max < freq <= freq_max + transition:
+                        alpha = (freq - freq_max) / transition
+                        blend = 0.5 + 0.5 * np.cos(np.pi * alpha)
+                        gain_array[idx] = max(gain_array[idx], gain_linear * blend)
+
+        # Final diagnostics
+        non_zero = np.count_nonzero(gain_array)
+        print(f"📊 Final gain array - Non-zero: {non_zero}/{n}")
+        print(f"   Min gain: {np.min(gain_array):.4f}, Max gain: {np.max(gain_array):.4f}")
+
+        return gain_array
 
 # ============================================================================
 # Utility Functions for Students 2, 3, 4
