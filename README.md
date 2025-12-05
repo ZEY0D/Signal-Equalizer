@@ -8,7 +8,7 @@ A comprehensive audio signal processing application featuring advanced equalizat
 
 ### Dual Operating Modes
 
-#### **Generic Mode**
+### **Generic Mode**
 Professional frequency-domain equalization with complete signal visualization using FFT:
 - **Multi-Domain Visualization**:
   - Time domain waveform analysis
@@ -30,7 +30,7 @@ Professional frequency-domain equalization with complete signal visualization us
 ![Generic Mode - Audiogram](docs/assets/generic%20mode-input&output%20audiogram.png)
 ![Generic Mode - Output](docs/assets/generic%20mode-%20output%20time%20domain%20and%20spectogram%20because%20of%203%20sliders.png)
 
-#### **Customized Mode**
+### **Customized Mode**
 Specialized source separation and processing with three intelligent presets, each featuring **static frequency sliders with dB gain control**. Musical and Human Voices modes include an **AI-powered separation feature** that allows you to compare results between AI-based source separation and traditional frequency-based filtering.
 
 ![Customized Mode](docs/assets/customized%20mode.png)
